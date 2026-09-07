@@ -1,0 +1,38 @@
+name: CI Build & Protocol Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-protocol-and-tests:
+    name: Test Protocol & Interfaces
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+
+      - name: Run Python Protocol & Controller Unit Tests
+        run: |
+          python -m pytest gesture-controller/tests/
+
+      - name: Compile & Run C++ Collision Filter Unit Tests
+        run: |
+          g++ -std=c++17 -Iprotocol -Ifirmware/src \
+            firmware/src/motion/collision_filter.cpp \
+            firmware/test/test_collision_filter.cpp \
+            -o test_collision_filter
+          ./test_collision_filter
