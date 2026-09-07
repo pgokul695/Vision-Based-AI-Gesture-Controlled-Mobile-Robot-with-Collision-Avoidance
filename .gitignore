@@ -16,7 +16,9 @@ dist/
 *.egg-info/
 *.egg
 
-# PlatformIO
+# Model files
+models/
+*.task
 .pio/
 .pioenvs/
 .piolibdeps/
