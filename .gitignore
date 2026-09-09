@@ -37,3 +37,6 @@ models/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Credentials & Secrets
+firmware/src/network/wifi_credentials.h

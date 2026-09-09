@@ -70,6 +70,13 @@ static inline bool is_valid_motion_packet(const MotionPacket *pkt) {
 }
 
 /**
+ * @brief Alias for is_valid_motion_packet.
+ */
+static inline bool motion_packet_is_valid(const MotionPacket *pkt) {
+    return is_valid_motion_packet(pkt);
+}
+
+/**
  * @brief Validates raw bytes and unpacks into a MotionPacket struct.
  *
  * @param buffer Pointer to raw received byte buffer.
