@@ -16,6 +16,7 @@
 #include "motion_packet.h"
 #include "network/wifi_credentials.h"
 #include "network/udp_receiver.h"
+#include "motion/motor_driver.h"
 
 // Configuration
 #define ROBOT_UDP_PORT 5005
@@ -122,6 +123,9 @@ void setup() {
     // Connect to Wi-Fi network
     connect_wifi();
 
+    // Initialize motor driver pins and LEDC PWM channels
+    motorDriverInit();
+
     // Initialize UDP receiver on configured port
     UdpReceiverConfig udp_cfg = { ROBOT_UDP_PORT };
     if (!udp_receiver_init(&udp_cfg)) {
@@ -130,6 +134,7 @@ void setup() {
 
     Serial.printf("[READY] Listening on %s:%u\n", WiFi.localIP().toString().c_str(), ROBOT_UDP_PORT);
     Serial.println(F("[READY] Status LED: Slow Heartbeat = Receiving, Double-Blink = Timeout"));
+    Serial.println(F("[READY] Drivetrain armed: Dual parallel-wired L298N active"));
     Serial.println(F("==================================================\n"));
 }
 
@@ -139,6 +144,7 @@ void loop() {
     // Check Wi-Fi connection health
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println(F("[WIFI WARN] Connection lost. Reconnecting..."));
+        driveMotors(0, 0);
         connect_wifi();
         return;
     }
@@ -149,6 +155,9 @@ void loop() {
     bool received = udp_receiver_poll_stats(&pkt, &stats, now_ms);
 
     if (received) {
+        // Drive motors with received velocities
+        driveMotors(pkt.linear, pkt.angular);
+
         // Sequence gap notification (drops / out-of-order delivery)
         if (stats.has_gap) {
             Serial.printf("[WARN] Sequence gap detected: missed %u (expected %u, got %u)\n",
@@ -159,12 +168,25 @@ void loop() {
         // [UDP] seq=123  lin=45  ang=-10  flags=0x00  age=48ms  rate=20.1Hz
         Serial.printf("[UDP] seq=%u  lin=%d  ang=%d  flags=0x%02X  age=%ums  rate=%.1fHz\n",
                       pkt.seq, pkt.linear, pkt.angular, pkt.flags, stats.age_ms, stats.rate_hz);
+
+        if (pkt.linear != 0 || pkt.angular != 0) {
+            int16_t left = (int16_t)pkt.linear + (int16_t)pkt.angular;
+            int16_t right = (int16_t)pkt.linear - (int16_t)pkt.angular;
+            if (left > 100) left = 100; else if (left < -100) left = -100;
+            if (right > 100) right = 100; else if (right < -100) right = -100;
+            Serial.printf("[MOTOR] Left: %d%% (PWM %u) | Right: %d%% (PWM %u)\n",
+                          left, (abs(left) * 255) / 100,
+                          right, (abs(right) * 255) / 100);
+        }
     }
 
     // 2. Failsafe timeout & liveness monitoring (>400 ms)
     uint32_t age_ms = udp_receiver_get_time_since_last_packet_ms(now_ms);
 
     if (age_ms > 400) {
+        // Stop motors immediately on timeout
+        driveMotors(0, 0);
+
         // Set LED to rapid double-blink timeout pattern
         update_status_led(LED_STATE_TIMEOUT, now_ms);
 

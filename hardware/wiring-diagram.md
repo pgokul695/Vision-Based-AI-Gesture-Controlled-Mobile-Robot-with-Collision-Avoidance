@@ -40,17 +40,21 @@ Power is supplied via a USB-C Power Delivery (PD) trigger board connected to an 
 
 ## 2. Component Interconnections
 
-### A. Motor Driver (L298N or DRV8833)
-| Driver Pin | ESP32 Pin | Function |
-|------------|-----------|----------|
-| `IN1` | `GPIO 25` | Left Motor Direction A |
-| `IN2` | `GPIO 26` | Left Motor Direction B |
-| `ENA` (PWM) | `GPIO 27` | Left Motor Speed (LEDC PWM) |
-| `IN3` | `GPIO 14` | Right Motor Direction A |
-| `IN4` | `GPIO 13` | Right Motor Direction B |
-| `ENB` (PWM) | `GPIO 4` | Right Motor Speed (LEDC PWM) |
-| `VCC` | `9V` Rail | Motor Power Supply |
-| `GND` | `GND Bus` | Common Ground |
+### A. Motor Drivers (Dual Parallel-Wired L298N)
+The two L298N boards have their logic control pins wired in parallel to the same 6 ESP32 GPIOs:
+- Board 1 (Front): Left channel = Front-Left Motor, Right channel = Front-Right Motor
+- Board 2 (Rear): Left channel = Rear-Left Motor, Right channel = Rear-Right Motor
+
+| Driver Signal | ESP32 Pin | Function | Parallel Connected Loads |
+|---------------|-----------|----------|--------------------------|
+| `ENA` (PWM)   | `GPIO 13` | Left Speed Control (LEDC CH0) | Both L298Ns ENA pins |
+| `IN1`         | `GPIO 12` | Left Direction A | Both L298Ns IN1 pins |
+| `IN2`         | `GPIO 14` | Left Direction B | Both L298Ns IN2 pins |
+| `ENB` (PWM)   | `GPIO 25` | Right Speed Control (LEDC CH1) | Both L298Ns ENB pins |
+| `IN3`         | `GPIO 27` | Right Direction A | Both L298Ns IN3 pins |
+| `IN4`         | `GPIO 26` | Right Direction B | Both L298Ns IN4 pins |
+| `VCC`         | `9V` Rail | Motor Power Supply | Both L298N 12V/VCC screw terminals |
+| `GND`         | `GND Bus` | Common Ground | Both L298N GND terminals + ESP32 GND |
 
 ### B. Front Ultrasonic Sensor Array (3x Units)
 | Sensor | Trig Pin (ESP32) | Echo Pin (ESP32 via 3.3V Divider) | Angle |
