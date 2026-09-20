@@ -1,14 +1,14 @@
 /**
  * @file main.cpp
- * @brief ESP32 Basic Connectivity Test firmware.
+ * @brief Full ESP32 Mobile Robot Firmware
  *
- * Validates Wi-Fi connection, UDP socket binding, and MotionPacket reception
- * before integrating sensor and motor drivers.
- *
- * LED Status Indicators:
- * - Connecting to Wi-Fi: Fast blink (~5 Hz, 100ms toggle)
- * - Connected & Receiving Packets (<400ms): Slow heartbeat (~1 Hz, 500ms toggle)
- * - Signal Timeout (>400ms without packet): Rapid double-blink
+ * Integrates:
+ * 1. UDP packet receiver (port 5005) with 400ms failsafe timeout
+ * 2. Non-blocking round-robin ultrasonic array (3 front sensors, interrupt pulse measurement)
+ * 3. 5-point digital IR proximity sensor array (active-low, polled every loop)
+ * 4. Multi-zone collision arbiter with proportional slowdown, reflex stop, and turn gating
+ * 5. Dual parallel-wired L298N motor driver (LEDC PWM)
+ * 6. Live SSD1306 OLED telemetry display (~5Hz)
  */
 
 #include <Arduino.h>
@@ -17,64 +17,20 @@
 #include "network/wifi_credentials.h"
 #include "network/udp_receiver.h"
 #include "motion/motor_driver.h"
+#include "motion/collision_filter.h"
+#include "sensors/ultrasonic.h"
+#include "sensors/ir.h"
+#include "display/oled_debug.h"
 
-// Configuration
 #define ROBOT_UDP_PORT 5005
 
-#ifndef STATUS_LED_PIN
-#ifdef LED_BUILTIN
-#define STATUS_LED_PIN LED_BUILTIN
-#else
-#define STATUS_LED_PIN 2
-#endif
-#endif
-
-// LED diagnostic states
-enum LedState {
-    LED_STATE_CONNECTING,  // Fast blink (~5 Hz)
-    LED_STATE_RECEIVING,   // Slow heartbeat (~1 Hz)
-    LED_STATE_TIMEOUT      // Rapid double-blink
-};
-
 static uint32_t g_last_timeout_log_ms = 0;
+static MotionPacket g_last_pkt;
+static bool g_has_packet = false;
+static UdpPacketStats g_last_stats = {0};
 
 /**
- * @brief Updates the status LED without blocking the execution loop.
- */
-static void update_status_led(LedState state, uint32_t now_ms) {
-    bool led_on = false;
-    switch (state) {
-        case LED_STATE_CONNECTING: {
-            // ~5 Hz fast blink (100ms ON, 100ms OFF)
-            led_on = (now_ms % 200) < 100;
-            break;
-        }
-        case LED_STATE_RECEIVING: {
-            // ~1 Hz slow heartbeat (500ms ON, 500ms OFF)
-            led_on = (now_ms % 1000) < 500;
-            break;
-        }
-        case LED_STATE_TIMEOUT: {
-            // Rapid double-blink pattern in a 1000ms window:
-            // 80ms ON, 80ms OFF, 80ms ON, 760ms OFF
-            uint32_t phase = now_ms % 1000;
-            if (phase < 80) {
-                led_on = true;
-            } else if (phase < 160) {
-                led_on = false;
-            } else if (phase < 240) {
-                led_on = true;
-            } else {
-                led_on = false;
-            }
-            break;
-        }
-    }
-    digitalWrite(STATUS_LED_PIN, led_on ? HIGH : LOW);
-}
-
-/**
- * @brief Connects to Wi-Fi with visible LED feedback and 15s timeout retry loop.
+ * @brief Connects to Wi-Fi with OLED and Serial status feedback.
  */
 static void connect_wifi(void) {
     WiFi.mode(WIFI_STA);
@@ -87,8 +43,10 @@ static void connect_wifi(void) {
         const uint32_t timeout_ms = 15000;
 
         while (WiFi.status() != WL_CONNECTED && (millis() - start_ms < timeout_ms)) {
-            update_status_led(LED_STATE_CONNECTING, millis());
-            delay(10);
+            OledTelemetryData telem = {0};
+            telem.wifi_connected = false;
+            oled_debug_update(&telem, millis(), true);
+            delay(100);
         }
 
         if (WiFi.status() == WL_CONNECTED) {
@@ -101,11 +59,7 @@ static void connect_wifi(void) {
 
         Serial.println(F("[WIFI ERROR] Connection timed out after 15s. Retrying in 2 seconds..."));
         WiFi.disconnect();
-        uint32_t retry_wait = millis();
-        while (millis() - retry_wait < 2000) {
-            update_status_led(LED_STATE_CONNECTING, millis());
-            delay(10);
-        }
+        delay(2000);
     }
 }
 
@@ -113,27 +67,38 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    pinMode(STATUS_LED_PIN, OUTPUT);
-    digitalWrite(STATUS_LED_PIN, LOW);
-
     Serial.println(F("\n=================================================="));
-    Serial.println(F("  ESP32 Basic Connectivity Test (Motion UDP)"));
+    Serial.println(F("  ESP32 Full Robot Firmware (Motors + Sensors + OLED)"));
     Serial.println(F("=================================================="));
 
-    // Connect to Wi-Fi network
+    // 1. Initialize OLED Debug Display (I2C SDA=21, SCL=22)
+    if (!oled_debug_init()) {
+        Serial.println(F("[WARN] OLED initialization failed or display absent"));
+    }
+
+    // 2. Connect to Wi-Fi network
     connect_wifi();
 
-    // Initialize motor driver pins and LEDC PWM channels
+    // 3. Initialize dual parallel-wired L298N motor drivers
     motorDriverInit();
 
-    // Initialize UDP receiver on configured port
+    // 4. Initialize ultrasonic sensor array (D15/D2, D23/D35, D33/D32)
+    ultrasonic_init(NULL);
+
+    // 5. Initialize digital IR sensor array (D34, D5, D19, D4, D18)
+    ir_init(NULL);
+
+    // 6. Initialize collision arbiter
+    collision_filter_init();
+
+    // 7. Initialize UDP receiver on configured port
     UdpReceiverConfig udp_cfg = { ROBOT_UDP_PORT };
     if (!udp_receiver_init(&udp_cfg)) {
         Serial.println(F("[FATAL] Failed to initialize UDP receiver!"));
     }
 
     Serial.printf("[READY] Listening on %s:%u\n", WiFi.localIP().toString().c_str(), ROBOT_UDP_PORT);
-    Serial.println(F("[READY] Status LED: Slow Heartbeat = Receiving, Double-Blink = Timeout"));
+    Serial.println(F("[READY] All sensor modules and collision arbiter online"));
     Serial.println(F("[READY] Drivetrain armed: Dual parallel-wired L298N active"));
     Serial.println(F("==================================================\n"));
 }
@@ -149,48 +114,62 @@ void loop() {
         return;
     }
 
-    // 1. Non-blocking UDP packet polling
+    // Step 1: Advance ultrasonic round-robin state machine
+    ultrasonic_update();
+
+    // Step 2: Read all 5 digital IR pins
+    ir_update(now_ms);
+
+    // Step 3: Check for incoming UDP packet & 400ms fail-safe timeout
     MotionPacket pkt;
     UdpPacketStats stats;
     bool received = udp_receiver_poll_stats(&pkt, &stats, now_ms);
+    uint32_t age_ms = udp_receiver_get_time_since_last_packet_ms(now_ms);
+    bool is_timeout = (age_ms > 400);
 
     if (received) {
-        // Drive motors with received velocities
-        driveMotors(pkt.linear, pkt.angular);
+        g_last_pkt = pkt;
+        g_has_packet = true;
+        g_last_stats = stats;
 
-        // Sequence gap notification (drops / out-of-order delivery)
+        // Sequence gap notification
         if (stats.has_gap) {
             Serial.printf("[WARN] Sequence gap detected: missed %u (expected %u, got %u)\n",
                           stats.missed_count, stats.expected_seq, stats.received_seq);
         }
 
-        // Print valid packet diagnostic line matching specification:
-        // [UDP] seq=123  lin=45  ang=-10  flags=0x00  age=48ms  rate=20.1Hz
+        // Diagnostic line from connectivity test
         Serial.printf("[UDP] seq=%u  lin=%d  ang=%d  flags=0x%02X  age=%ums  rate=%.1fHz\n",
                       pkt.seq, pkt.linear, pkt.angular, pkt.flags, stats.age_ms, stats.rate_hz);
-
-        if (pkt.linear != 0 || pkt.angular != 0) {
-            int16_t left = (int16_t)pkt.linear + (int16_t)pkt.angular;
-            int16_t right = (int16_t)pkt.linear - (int16_t)pkt.angular;
-            if (left > 100) left = 100; else if (left < -100) left = -100;
-            if (right > 100) right = 100; else if (right < -100) right = -100;
-            Serial.printf("[MOTOR] Left: %d%% (PWM %u) | Right: %d%% (PWM %u)\n",
-                          left, (abs(left) * 255) / 100,
-                          right, (abs(right) * 255) / 100);
-        }
     }
 
-    // 2. Failsafe timeout & liveness monitoring (>400 ms)
-    uint32_t age_ms = udp_receiver_get_time_since_last_packet_ms(now_ms);
+    MotionCommand incomingCommand = {0, 0};
+    if (!is_timeout && g_has_packet && !(g_last_pkt.flags & MOTION_FLAG_ESTOP)) {
+        incomingCommand.linear = g_last_pkt.linear;
+        incomingCommand.angular = g_last_pkt.angular;
+    } else {
+        incomingCommand.linear = 0;
+        incomingCommand.angular = 0;
+    }
 
-    if (age_ms > 400) {
-        // Stop motors immediately on timeout
-        driveMotors(0, 0);
+    // Step 4: Apply multi-zone collision avoidance safety filter
+    MotionCommand safeCommand = applyCollisionFilter(incomingCommand);
 
-        // Set LED to rapid double-blink timeout pattern
-        update_status_led(LED_STATE_TIMEOUT, now_ms);
+    // Step 5: Drive motors with safe filtered velocities
+    driveMotors(safeCommand.linear, safeCommand.angular);
 
-        // Rate-limited warning once per second (1000ms)
+    if (safeCommand.linear != 0 || safeCommand.angular != 0) {
+        int16_t left = (int16_t)safeCommand.linear + (int16_t)safeCommand.angular;
+        int16_t right = (int16_t)safeCommand.linear - (int16_t)safeCommand.angular;
+        if (left > 100) left = 100; else if (left < -100) left = -100;
+        if (right > 100) right = 100; else if (right < -100) right = -100;
+        Serial.printf("[MOTOR] Left: %d%% (PWM %u) | Right: %d%% (PWM %u)\n",
+                      left, (abs(left) * 255) / 100,
+                      right, (abs(right) * 255) / 100);
+    }
+
+    // Failsafe timeout diagnostic log (once per second)
+    if (is_timeout) {
         if (now_ms - g_last_timeout_log_ms >= 1000) {
             if (age_ms == UINT32_MAX) {
                 Serial.println(F("[FAILSAFE] No signal from controller: waiting for initial packets..."));
@@ -199,10 +178,34 @@ void loop() {
             }
             g_last_timeout_log_ms = now_ms;
         }
-    } else {
-        // Normal receiving state: slow heartbeat blink (~1 Hz)
-        update_status_led(LED_STATE_RECEIVING, now_ms);
     }
+
+    // Step 6: Update OLED debug display (~5Hz rate-limited)
+    char ip_str[24];
+    snprintf(ip_str, sizeof(ip_str), "%s", WiFi.localIP().toString().c_str());
+
+    OledTelemetryData telem;
+    telem.wifi_ip = ip_str;
+    telem.wifi_connected = (WiFi.status() == WL_CONNECTED);
+    telem.packet_rate_hz = g_last_stats.rate_hz;
+    telem.signal_timeout = is_timeout;
+    telem.in_linear = incomingCommand.linear;
+    telem.in_angular = incomingCommand.angular;
+    telem.out_linear = safeCommand.linear;
+    telem.out_angular = safeCommand.angular;
+    telem.us_left_cm = getDistanceCm(US_POS_FRONT_LEFT);
+    telem.us_center_cm = getDistanceCm(US_POS_FRONT_CENTER);
+    telem.us_right_cm = getDistanceCm(US_POS_FRONT_RIGHT);
+    telem.us_left_stale = ultrasonic_is_stale(US_POS_FRONT_LEFT);
+    telem.us_center_stale = ultrasonic_is_stale(US_POS_FRONT_CENTER);
+    telem.us_right_stale = ultrasonic_is_stale(US_POS_FRONT_RIGHT);
+    telem.ir_fl = isTriggered(IR_POS_FRONT_LEFT);
+    telem.ir_fr = isTriggered(IR_POS_FRONT_RIGHT);
+    telem.ir_sl = isTriggered(IR_POS_SIDE_LEFT);
+    telem.ir_sr = isTriggered(IR_POS_SIDE_RIGHT);
+    telem.ir_rc = isTriggered(IR_POS_REAR_CENTER);
+
+    oled_debug_update(&telem, now_ms, false);
 
     // Yield control loop throttle
     delay(2);

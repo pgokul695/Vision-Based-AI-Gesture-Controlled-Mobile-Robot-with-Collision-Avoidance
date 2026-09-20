@@ -2,12 +2,12 @@
  * @file ir.h
  * @brief Interface for 5 digital IR proximity sensors.
  *
- * Sensor topology:
- * - Front-Left (low-mounted, tight range, ground/obstacle detection)
- * - Front-Right (low-mounted, tight range, ground/obstacle detection)
- * - Side-Left (chassis midpoint, left flank)
- * - Side-Right (chassis midpoint, right flank)
- * - Rear-Center (reversing blindspot protection)
+ * Sensor topology (swapped D34 and D23 for hardware compatibility):
+ * - Front-Left:   D34 (GPI input-only pin)
+ * - Front-Right:  D5
+ * - Side-Left:    D19
+ * - Side-Right:   D4
+ * - Rear-Center:  D18
  *
  * Polled directly via GPIO digital read on every control loop iteration.
  */
@@ -22,7 +22,20 @@
 extern "C" {
 #endif
 
+// Pin assignments matching hardware pin map
+#define IR_FRONT_LEFT_PIN    34
+#define IR_FRONT_RIGHT_PIN   5
+#define IR_SIDE_LEFT_PIN     19
+#define IR_SIDE_RIGHT_PIN    4
+#define IR_REAR_CENTER_PIN   18
+
 typedef enum {
+    IR_POS_FRONT_LEFT = 0,
+    IR_POS_FRONT_RIGHT = 1,
+    IR_POS_SIDE_LEFT = 2,
+    IR_POS_SIDE_RIGHT = 3,
+    IR_POS_REAR_CENTER = 4,
+    // Aliases
     IR_SENSOR_FRONT_LEFT = 0,
     IR_SENSOR_FRONT_RIGHT = 1,
     IR_SENSOR_SIDE_LEFT = 2,
@@ -30,6 +43,8 @@ typedef enum {
     IR_SENSOR_REAR_CENTER = 4,
     IR_SENSOR_COUNT = 5
 } IRSensorIndex;
+
+typedef IRSensorIndex IRPosition;
 
 /**
  * @brief Status of all 5 digital IR sensors.
@@ -58,15 +73,21 @@ typedef struct {
 
 /**
  * @brief Initializes digital input pins for all 5 IR sensors.
- * @param config Pin allocations and active polarity.
+ * @param config Optional custom pin allocation (NULL uses default hardware map).
  */
 void ir_init(const IRPinConfig *config);
 
 /**
  * @brief Polls all 5 IR sensor pins and updates internal state.
- * Should be called once every main loop cycle.
+ * Called on every main loop cycle.
  */
 void ir_update(uint32_t current_time_ms);
+
+/**
+ * @brief Returns true if specified IR sensor detects an obstacle.
+ */
+bool isTriggered(IRPosition pos);
+bool ir_is_triggered(IRPosition pos);
 
 /**
  * @brief Retrieves the latest polled IR readings.

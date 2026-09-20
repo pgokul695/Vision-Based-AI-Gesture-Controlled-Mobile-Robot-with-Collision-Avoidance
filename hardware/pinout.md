@@ -1,6 +1,6 @@
 # ESP32 Pinout Allocation Table
 
-This document details the GPIO assignments for the ESP32-WROOM-32 Dev Module with a 4WD skid-steer chassis and dual parallel-wired L298N motor drivers.
+This document details the GPIO assignments for the ESP32-WROOM-32 Dev Module with a 4WD skid-steer chassis, dual parallel-wired L298N motor drivers, 3x ultrasonic sensors, 5x digital IR proximity sensors, and an SSD1306 OLED debug display.
 
 ## Motor Drivetrain Pinout (Dual Parallel-Wired L298N)
 
@@ -15,24 +15,37 @@ The two L298N drivers have their control inputs wired in parallel to the same 6 
 | `GPIO 27` | OUTPUT | Dual L298N (Parallel) | Right Side Direction (`IN3`) | Direction control |
 | `GPIO 26` | OUTPUT | Dual L298N (Parallel) | Right Side Direction (`IN4`) | Direction control |
 
-## Sensor Subsystems (Future Integration)
+## Ultrasonic Sensor Array (3x Front, Non-Blocking Round-Robin)
 
-| GPIO Pin | Direction | Connected Subsystem | Signal Function | Remarks |
-|----------|-----------|---------------------|-----------------|---------|
-| `GPIO 5` | OUTPUT | Ultrasonic Left | Trigger Pulse | ~45° Front-Left |
-| `GPIO 18` | INPUT | Ultrasonic Left | Echo Return | Use 3.3V logic or divider |
-| `GPIO 19` | OUTPUT | Ultrasonic Center | Trigger Pulse | 0° Front-Center |
-| `GPIO 21` | INPUT | Ultrasonic Center | Echo Return | Use 3.3V logic or divider |
-| `GPIO 22` | OUTPUT | Ultrasonic Right | Trigger Pulse | ~45° Front-Right |
-| `GPIO 23` | INPUT | Ultrasonic Right | Echo Return | Use 3.3V logic or divider |
-| `GPIO 16` | INPUT | IR Proximity | Rear-Center Digital Read | Active LOW |
-| `GPIO 32` | INPUT | IR Proximity | Front-Left Digital Read | Low-mounted front |
-| `GPIO 33` | INPUT | IR Proximity | Front-Right Digital Read | Low-mounted front |
-| `GPIO 34` | INPUT | IR Proximity | Side-Left Digital Read | ESP32 Input-only pin (no pullup) |
-| `GPIO 35` | INPUT | IR Proximity | Side-Right Digital Read | ESP32 Input-only pin (no pullup) |
+Fired sequentially in round-robin sequence (never simultaneously) with a bounded 25ms timeout.
+
+| Position | Trig Pin | Echo Pin | Remarks |
+|----------|----------|----------|---------|
+| Front-Left | `GPIO 15` (OUTPUT) | `GPIO 2` (INPUT) | ~45° Front-Left |
+| Front-Center | `GPIO 23` (OUTPUT) | `GPIO 35` (INPUT) | 0° Front-Center (swapped with D34) |
+| Front-Right | `GPIO 33` (OUTPUT) | `GPIO 32` (INPUT) | ~45° Front-Right |
+
+## Digital IR Proximity Sensors (5x, Polled Every Loop)
+
+Digital obstacle detection modules (active-low: `LOW` = obstacle detected).
+
+| Position | GPIO Pin | Direction | Remarks |
+|----------|----------|-----------|---------|
+| Front-Left | `GPIO 34` | INPUT | Swapped with D23; GPI pin without internal pullup |
+| Front-Right | `GPIO 5` | INPUT_PULLUP | Active LOW |
+| Side-Left | `GPIO 19` | INPUT_PULLUP | Active LOW (gates left turn) |
+| Side-Right | `GPIO 4` | INPUT_PULLUP | Active LOW (gates right turn) |
+| Rear-Center | `GPIO 18` | INPUT_PULLUP | Active LOW (gates reverse) |
+
+## OLED Debug Display (SSD1306 I2C, 128x64)
+
+| Signal | GPIO Pin | Function | Remarks |
+|--------|----------|----------|---------|
+| SDA | `GPIO 21` | I2C Data | 400 kHz Fast Mode, Address `0x3C` |
+| SCL | `GPIO 22` | I2C Clock | 400 kHz Fast Mode |
 
 ## Strapping Pin Precautions
-- `GPIO 0`: Boot mode selector (Must be pulled HIGH for normal boot)
-- `GPIO 2`: Internal strapping pin (Connected to on-board LED / status LED)
-- `GPIO 12` (MTDI): Flash voltage strapping. Used as normal output (`MOTOR_LEFT_IN1_PIN`) post-boot. If flaky boots ever occur, check that L298N logic does not pull this line HIGH during boot.
-- `GPIO 15` (MTDO): JTAG strapping / silent boot output
+- `GPIO 0`: Boot mode selector (Pulled HIGH for normal boot)
+- `GPIO 2`: Internal strapping pin / FL Echo. Do not pull HIGH externally during boot.
+- `GPIO 12` (MTDI): Flash voltage strapping. Used as normal output (`MOTOR_LEFT_IN1_PIN`) post-boot.
+- `GPIO 15` (MTDO): JTAG strapping / FL Trig. Pulled LOW by default.
