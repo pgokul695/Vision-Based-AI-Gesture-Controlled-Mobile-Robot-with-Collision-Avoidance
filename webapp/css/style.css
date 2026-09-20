@@ -1,0 +1,855 @@
+/**
+ * @file style.css
+ * @brief Purpose-built robotics HUD stylesheet for ESP32 Mobile Robot Web App.
+ *
+ * Theme: Matte dark (#0e1117), crisp flat surfaces (#181b22), single amber accent (#f59e0b).
+ * Strict adherence to robotics telemetry guidelines, high-contrast monospace displays,
+ * and >=48px touch targets.
+ */
+
+:root {
+    --bg-main: #0e1117;
+    --bg-surface: #181b22;
+    --bg-surface-elevated: #222734;
+    --border-color: #2a2e39;
+    --border-highlight: #3b4252;
+
+    --text-primary: #e2e8f0;
+    --text-muted: #94a3b8;
+    --text-disabled: #475569;
+
+    --accent-amber: #f59e0b;
+    --accent-amber-hover: #d97706;
+    --status-green: #10b981;
+    --status-red: #ef4444;
+    --status-cyan: #38bdf8;
+    --status-purple: #a855f7;
+
+    --font-system: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+    --header-height: 52px;
+    --footer-height: 64px;
+    --tab-bar-height: 48px;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: var(--font-system);
+    font-size: 14px;
+    line-height: 1.4;
+    touch-action: none;
+}
+
+.font-mono {
+    font-family: var(--font-mono);
+    letter-spacing: 0.5px;
+}
+
+/* --- Master HUD Container --- */
+.hud-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+/* --- Fixed Header --- */
+.hud-header {
+    height: var(--header-height);
+    background-color: var(--bg-surface);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 20;
+    flex-shrink: 0;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.robot-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--accent-amber);
+}
+
+.connection-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background-color: var(--bg-main);
+    border: 1px solid var(--border-color);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--status-red);
+}
+
+.status-dot.connected {
+    background-color: var(--status-green);
+    box-shadow: 0 0 6px var(--status-green);
+}
+
+.status-dot.connecting {
+    background-color: var(--accent-amber);
+    box-shadow: 0 0 6px var(--accent-amber);
+}
+
+.status-dot.disconnected {
+    background-color: var(--status-red);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.telemetry-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: var(--bg-main);
+    border: 1px solid var(--border-color);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.telem-metric {
+    color: var(--text-primary);
+}
+
+.hud-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.badge-normal {
+    background-color: var(--bg-surface-elevated);
+    color: var(--text-muted);
+}
+
+.badge-turbo {
+    background-color: rgba(245, 158, 11, 0.2);
+    color: var(--accent-amber);
+    border: 1px solid var(--accent-amber);
+}
+
+.badge-prec {
+    background-color: rgba(56, 189, 248, 0.2);
+    color: var(--status-cyan);
+    border: 1px solid var(--status-cyan);
+}
+
+.badge-trick {
+    background-color: rgba(168, 85, 247, 0.2);
+    color: var(--status-purple);
+    border: 1px solid var(--status-purple);
+}
+
+.badge-estop {
+    background-color: rgba(239, 68, 68, 0.3);
+    color: var(--status-red);
+    border: 1px solid var(--status-red);
+}
+
+.icon-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-muted);
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+}
+
+.icon-btn:hover {
+    border-color: var(--accent-amber);
+    color: var(--text-primary);
+}
+
+/* --- Tab Bar --- */
+.hud-tab-bar {
+    height: var(--tab-bar-height);
+    background-color: var(--bg-main);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    flex-shrink: 0;
+}
+
+.hud-tab-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+    height: 100%;
+}
+
+.hud-tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.hud-tab-btn.active {
+    color: var(--accent-amber);
+    border-bottom: 2px solid var(--accent-amber);
+    background-color: var(--bg-surface);
+}
+
+/* --- Tab View Area --- */
+.hud-tab-view {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- Universal HUD Buttons --- */
+.hud-btn {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    transition: background-color 0.1s, border-color 0.1s, transform 0.05s;
+}
+
+.hud-btn:active, .hud-btn.active, .hud-btn.key-pressed {
+    background-color: var(--accent-amber);
+    color: #000;
+    border-color: var(--accent-amber);
+    transform: scale(0.98);
+}
+
+/* Modifiers Row */
+.modifiers-panel {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    max-width: 440px;
+    margin: 16px auto 0 auto;
+}
+
+.mod-btn {
+    flex: 1;
+    height: 54px;
+    padding: 6px;
+    text-align: center;
+}
+
+.mod-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.mod-desc {
+    font-size: 10px;
+    opacity: 0.8;
+}
+
+.mod-btn.trick-btn {
+    border-color: var(--status-purple);
+}
+
+.mod-btn.trick-btn:active, .mod-btn.trick-btn.active {
+    background-color: var(--status-purple);
+    color: #fff;
+    border-color: var(--status-purple);
+}
+
+/* --- Traditional Nav Tab --- */
+.nav-control-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    margin: auto 0;
+}
+
+.dpad-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.dpad-middle-row {
+    display: flex;
+    gap: 8px;
+}
+
+.dpad-btn {
+    width: 88px;
+    height: 88px;
+    font-size: 18px;
+}
+
+.btn-icon {
+    font-size: 24px;
+    line-height: 1;
+}
+
+.btn-label {
+    font-size: 11px;
+    font-weight: 700;
+    margin-top: 4px;
+}
+
+.dpad-stop {
+    background-color: #261b1e;
+    border-color: #5c282e;
+    color: var(--status-red);
+}
+
+.dpad-stop:active, .dpad-stop.active {
+    background-color: var(--status-red);
+    color: #fff;
+    border-color: var(--status-red);
+}
+
+/* --- WASD Tab --- */
+.wasd-control-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    margin: auto 0;
+}
+
+.wasd-instructions {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.hud-tag {
+    font-size: 10px;
+    letter-spacing: 1px;
+    background-color: var(--bg-surface-elevated);
+    border: 1px solid var(--border-color);
+    padding: 3px 8px;
+    border-radius: 4px;
+    color: var(--accent-amber);
+}
+
+.hud-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 8px;
+}
+
+.wasd-cluster {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+.wasd-row {
+    display: flex;
+    gap: 8px;
+}
+
+.wasd-btn {
+    width: 80px;
+    height: 80px;
+}
+
+.btn-letter {
+    font-size: 26px;
+    font-weight: 800;
+    font-family: var(--font-mono);
+}
+
+.btn-sub {
+    font-size: 10px;
+    font-weight: 600;
+    opacity: 0.7;
+}
+
+.wasd-space-btn {
+    width: 256px;
+    height: 52px;
+    background-color: #261b1e;
+    border-color: #5c282e;
+    color: var(--status-red);
+}
+
+/* --- Joystick Tab --- */
+.joystick-control-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    margin: auto 0;
+}
+
+.joystick-header {
+    width: 100%;
+    max-width: 400px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.mode-toggle-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hud-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.mode-btn {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.stick-readout {
+    font-size: 12px;
+    color: var(--text-muted);
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    padding: 4px 8px;
+    border-radius: 4px;
+    display: flex;
+    gap: 10px;
+}
+
+.joystick-arena {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.joystick-base {
+    width: 240px;
+    height: 240px;
+    border-radius: 50%;
+    background-color: var(--bg-surface);
+    border: 2px solid var(--border-color);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.joystick-crosshair-x {
+    position: absolute;
+    width: 100%;
+    height: 1px;
+    background-color: var(--border-color);
+}
+
+.joystick-crosshair-y {
+    position: absolute;
+    height: 100%;
+    width: 1px;
+    background-color: var(--border-color);
+}
+
+.joystick-deadzone-circle {
+    position: absolute;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 1px dashed var(--border-color);
+    pointer-events: none;
+}
+
+.joystick-knob {
+    width: 80px;
+    height: 80px;
+    border-radius: 50%;
+    background-color: var(--bg-surface-elevated);
+    border: 2px solid var(--accent-amber);
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    transition: transform 0.04s ease-out;
+}
+
+.knob-center-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: var(--accent-amber);
+}
+
+/* --- Gesture Tab --- */
+.gesture-control-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    height: 100%;
+}
+
+.gesture-header {
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.gesture-status-bar {
+    display: flex;
+    justify-content: space-between;
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.gesture-viewport-container {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    max-height: 400px;
+    background-color: #000;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.video-wrapper {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+#gesture-video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1); /* Mirror camera feed */
+}
+
+#gesture-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    transform: scaleX(-1); /* Mirror landmark overlay to align with video */
+    pointer-events: none;
+}
+
+.camera-crosshairs {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.crosshair-neutral-band {
+    width: 100%;
+    height: 12%; /* ~6% above and below 0.5 */
+    background-color: rgba(245, 158, 11, 0.08);
+    border-top: 1px dashed rgba(245, 158, 11, 0.4);
+    border-bottom: 1px dashed rgba(245, 158, 11, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.crosshair-neutral-band span {
+    font-size: 9px;
+    color: var(--accent-amber);
+    opacity: 0.6;
+    letter-spacing: 1px;
+}
+
+.gesture-loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(14, 17, 23, 0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-muted);
+}
+
+.spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--accent-amber);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.gesture-error-banner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--bg-surface);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 10;
+    overflow-y: auto;
+}
+
+.banner-icon {
+    font-size: 32px;
+}
+
+.banner-content h4 {
+    color: var(--accent-amber);
+    margin-bottom: 8px;
+    font-size: 15px;
+}
+
+.banner-content p {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.banner-footnote {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+}
+
+.gesture-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    margin-top: 12px;
+    justify-content: center;
+    width: 100%;
+}
+
+.legend-item {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.legend-key {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+/* --- Fixed Footer Strip --- */
+.hud-footer {
+    height: var(--footer-height);
+    background-color: var(--bg-surface);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    z-index: 20;
+    flex-shrink: 0;
+}
+
+.footer-btn {
+    height: 48px;
+    border-radius: 6px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.footer-estop-btn {
+    flex: 2;
+    background-color: #7f1d1d;
+    border: 2px solid var(--status-red);
+    color: #fff;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.footer-estop-btn:active, .footer-estop-btn.active {
+    background-color: var(--status-red);
+    box-shadow: 0 0 16px var(--status-red);
+    transform: scale(0.98);
+}
+
+.footer-trick-btn {
+    flex: 1;
+    background-color: #3b0764;
+    border: 1px solid var(--status-purple);
+    color: #e9d5ff;
+}
+
+.footer-trick-btn:active, .footer-trick-btn.active {
+    background-color: var(--status-purple);
+    color: #fff;
+    transform: scale(0.98);
+}
+
+/* --- Settings Modal --- */
+.modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+}
+
+.modal-dialog {
+    background-color: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 420px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--accent-amber);
+}
+
+.input-field {
+    width: 100%;
+    background-color: var(--bg-main);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+.input-field:focus {
+    outline: none;
+    border-color: var(--accent-amber);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.btn-primary {
+    background-color: var(--accent-amber);
+    color: #000;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.btn-secondary {
+    background-color: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.hidden {
+    display: none !important;
+}

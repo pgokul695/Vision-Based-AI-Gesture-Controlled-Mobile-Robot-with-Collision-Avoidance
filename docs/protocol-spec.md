@@ -36,7 +36,10 @@ The `flags` byte provides single-bit status indicators:
 |-----------|------|------|-------------|
 | `Bit 0` | `0x01` | `FLAG_ESTOP` | Emergency Stop request from host. ESP32 halts motors immediately when set. |
 | `Bit 1` | `0x02` | `FLAG_LOW_CONFIDENCE` | Host hand tracking confidence is degraded. ESP32 may apply conservative velocity caps. |
-| `Bits 2-7`| `0xFC` | `RESERVED` | Reserved for future flag allocations. Must be transmitted as `0`. |
+| `Bit 2` | `0x04` | `FLAG_FUN_TRICK` | Triggers fun trick sequencer on ESP32 (e.g. 1.5s canned spin). |
+| `Bit 3` | `0x08` | `FLAG_TURBO` | Turbo speed mode: scales velocities up by 1.3x. |
+| `Bit 4` | `0x10` | `FLAG_PRECISION` | Precision speed mode: scales velocities down by 0.5x. Takes precedence if both set. |
+| `Bits 5-7`| `0xE0` | `RESERVED` | Reserved for future flag allocations. Must be transmitted as `0`. |
 
 ---
 

@@ -1,14 +1,15 @@
 /**
  * @file main.cpp
- * @brief Full ESP32 Mobile Robot Firmware
+ * @brief Full ESP32 Mobile Robot Firmware with Dual Transports & Fun Trick Sequencer
  *
  * Integrates:
- * 1. UDP packet receiver (port 5005) with 400ms failsafe timeout
- * 2. Non-blocking round-robin ultrasonic array (3 front sensors, interrupt pulse measurement)
- * 3. 5-point digital IR proximity sensor array (active-low, polled every loop)
- * 4. Multi-zone collision arbiter with proportional slowdown, reflex stop, and turn gating
- * 5. Dual parallel-wired L298N motor driver (LEDC PWM)
- * 6. Live SSD1306 OLED telemetry display (~5Hz)
+ * 1. UDP packet receiver (port 5005)
+ * 2. Async WebSocket receiver (port 80, /ws)
+ * 3. Most-recent-packet arbitration across transports with unified 400ms fail-safe timeout
+ * 4. Fun trick sequencer (1.5s canned spin on rising edge of FLAG_FUN_TRICK)
+ * 5. Multi-zone collision arbiter with proportional slowdown, reflex stop, and turn gating
+ * 6. Dual parallel-wired L298N motor driver (LEDC PWM)
+ * 7. Live SSD1306 OLED telemetry display (~5Hz)
  */
 
 #include <Arduino.h>
@@ -16,18 +17,32 @@
 #include "motion_packet.h"
 #include "network/wifi_credentials.h"
 #include "network/udp_receiver.h"
+#include "network/ws_receiver.h"
 #include "motion/motor_driver.h"
 #include "motion/collision_filter.h"
+#include "motion/trick_sequencer.h"
+#include "motion/speed_mode.h"
 #include "sensors/ultrasonic.h"
 #include "sensors/ir.h"
 #include "display/oled_debug.h"
 
 #define ROBOT_UDP_PORT 5005
+#define ROBOT_WS_PORT  80
+#define ROBOT_WS_PATH  "/ws"
+
+enum ActiveTransport {
+    TRANSPORT_NONE = 0,
+    TRANSPORT_UDP,
+    TRANSPORT_WS
+};
 
 static uint32_t g_last_timeout_log_ms = 0;
-static MotionPacket g_last_pkt;
+static MotionPacket g_latest_pkt;
 static bool g_has_packet = false;
-static UdpPacketStats g_last_stats = {0};
+static uint32_t g_latest_pkt_time_ms = 0;
+static ActiveTransport g_latest_transport = TRANSPORT_NONE;
+static float g_active_packet_rate_hz = 0.0f;
+static bool g_prev_trick_flag = false;
 
 /**
  * @brief Connects to Wi-Fi with OLED and Serial status feedback.
@@ -68,7 +83,7 @@ void setup() {
     delay(500);
 
     Serial.println(F("\n=================================================="));
-    Serial.println(F("  ESP32 Full Robot Firmware (Motors + Sensors + OLED)"));
+    Serial.println(F("  ESP32 Full Robot Firmware (UDP + WebSocket + Trick)"));
     Serial.println(F("=================================================="));
 
     // 1. Initialize OLED Debug Display (I2C SDA=21, SCL=22)
@@ -88,8 +103,9 @@ void setup() {
     // 5. Initialize digital IR sensor array (D34, D5, D19, D4, D18)
     ir_init(NULL);
 
-    // 6. Initialize collision arbiter
+    // 6. Initialize collision arbiter and trick sequencer
     collision_filter_init();
+    trick_sequencer_init();
 
     // 7. Initialize UDP receiver on configured port
     UdpReceiverConfig udp_cfg = { ROBOT_UDP_PORT };
@@ -97,8 +113,15 @@ void setup() {
         Serial.println(F("[FATAL] Failed to initialize UDP receiver!"));
     }
 
-    Serial.printf("[READY] Listening on %s:%u\n", WiFi.localIP().toString().c_str(), ROBOT_UDP_PORT);
-    Serial.println(F("[READY] All sensor modules and collision arbiter online"));
+    // 8. Initialize Async WebSocket receiver
+    WsReceiverConfig ws_cfg = { ROBOT_WS_PORT, ROBOT_WS_PATH };
+    if (!ws_receiver_init(&ws_cfg)) {
+        Serial.println(F("[FATAL] Failed to initialize WebSocket receiver!"));
+    }
+
+    Serial.printf("[READY] UDP listening on %s:%u\n", WiFi.localIP().toString().c_str(), ROBOT_UDP_PORT);
+    Serial.printf("[READY] WebSocket listening on ws://%s:%u%s\n", WiFi.localIP().toString().c_str(), ROBOT_WS_PORT, ROBOT_WS_PATH);
+    Serial.println(F("[READY] All sensor modules, dual transports, and collision arbiter online"));
     Serial.println(F("[READY] Drivetrain armed: Dual parallel-wired L298N active"));
     Serial.println(F("==================================================\n"));
 }
@@ -114,46 +137,98 @@ void loop() {
         return;
     }
 
-    // Step 1: Advance ultrasonic round-robin state machine
+    // Step 1: Advance ultrasonic round-robin state machine & read IR pins
     ultrasonic_update();
-
-    // Step 2: Read all 5 digital IR pins
     ir_update(now_ms);
 
-    // Step 3: Check for incoming UDP packet & 400ms fail-safe timeout
-    MotionPacket pkt;
-    UdpPacketStats stats;
-    bool received = udp_receiver_poll_stats(&pkt, &stats, now_ms);
-    uint32_t age_ms = udp_receiver_get_time_since_last_packet_ms(now_ms);
-    bool is_timeout = (age_ms > 400);
+    // Step 2: Poll both UDP and WebSocket transports
+    MotionPacket udp_pkt;
+    UdpPacketStats udp_stats;
+    bool udp_received = udp_receiver_poll_stats(&udp_pkt, &udp_stats, now_ms);
 
-    if (received) {
-        g_last_pkt = pkt;
+    MotionPacket ws_pkt;
+    WsPacketStats ws_stats;
+    bool ws_received = ws_receiver_poll_stats(&ws_pkt, &ws_stats, now_ms);
+
+    // Process UDP packet arrival
+    if (udp_received) {
+        if (udp_stats.has_gap) {
+            Serial.printf("[UDP WARN] Sequence gap detected: missed %u (expected %u, got %u)\n",
+                          udp_stats.missed_count, udp_stats.expected_seq, udp_stats.received_seq);
+        }
+        Serial.printf("[UDP] seq=%u  lin=%d  ang=%d  flags=0x%02X  age=%ums  rate=%.1fHz\n",
+                      udp_pkt.seq, udp_pkt.linear, udp_pkt.angular, udp_pkt.flags, udp_stats.age_ms, udp_stats.rate_hz);
+
+        g_latest_pkt = udp_pkt;
+        g_latest_pkt_time_ms = now_ms;
+        g_latest_transport = TRANSPORT_UDP;
+        g_active_packet_rate_hz = udp_stats.rate_hz;
         g_has_packet = true;
-        g_last_stats = stats;
+    }
 
-        // Sequence gap notification
-        if (stats.has_gap) {
-            Serial.printf("[WARN] Sequence gap detected: missed %u (expected %u, got %u)\n",
-                          stats.missed_count, stats.expected_seq, stats.received_seq);
+    // Process WebSocket packet arrival (most recent wins)
+    if (ws_received) {
+        if (ws_stats.has_gap) {
+            Serial.printf("[WS WARN] Sequence gap detected: missed %u (expected %u, got %u)\n",
+                          ws_stats.missed_count, ws_stats.expected_seq, ws_stats.received_seq);
+        }
+        Serial.printf("[WS] seq=%u  lin=%d  ang=%d  flags=0x%02X  age=%ums  rate=%.1fHz\n",
+                      ws_pkt.seq, ws_pkt.linear, ws_pkt.angular, ws_pkt.flags, ws_stats.age_ms, ws_stats.rate_hz);
+
+        g_latest_pkt = ws_pkt;
+        g_latest_pkt_time_ms = now_ms;
+        g_latest_transport = TRANSPORT_WS;
+        g_active_packet_rate_hz = ws_stats.rate_hz;
+        g_has_packet = true;
+    }
+
+    // Periodic WebSocket cleanup
+    ws_receiver_cleanup();
+
+    // Check for E-Stop and Fun Trick triggers on newly received packet
+    if (udp_received || ws_received) {
+        // E-Stop aborts trick immediately
+        if (g_latest_pkt.flags & MOTION_FLAG_ESTOP) {
+            trick_sequencer_abort();
         }
 
-        // Diagnostic line from connectivity test
-        Serial.printf("[UDP] seq=%u  lin=%d  ang=%d  flags=0x%02X  age=%ums  rate=%.1fHz\n",
-                      pkt.seq, pkt.linear, pkt.angular, pkt.flags, stats.age_ms, stats.rate_hz);
+        // Fun Trick trigger on rising edge
+        bool trick_flag = (g_latest_pkt.flags & MOTION_FLAG_FUN_TRICK) != 0;
+        if (trick_flag && !g_prev_trick_flag) {
+            trick_sequencer_trigger(now_ms);
+            Serial.println(F("[TRICK] Fun trick triggered! Initiating 1.5s canned spin..."));
+        }
+        g_prev_trick_flag = trick_flag;
     }
 
-    MotionCommand incomingCommand = {0, 0};
-    if (!is_timeout && g_has_packet && !(g_last_pkt.flags & MOTION_FLAG_ESTOP)) {
-        incomingCommand.linear = g_last_pkt.linear;
-        incomingCommand.angular = g_last_pkt.angular;
-    } else {
-        incomingCommand.linear = 0;
-        incomingCommand.angular = 0;
+    // Step 3: Unified 400ms fail-safe timeout check
+    uint32_t age_ms = (g_latest_pkt_time_ms == 0) ? UINT32_MAX : (now_ms - g_latest_pkt_time_ms);
+    bool is_timeout = (age_ms > 400);
+
+    // Update trick sequencer countdown
+    trick_sequencer_update(now_ms);
+    bool trick_active = isTrickActive();
+
+    // Determine active incoming command
+    MotionCommand rawCommand = {0, 0};
+    uint8_t active_flags = 0;
+    if (!is_timeout && g_has_packet && !(g_latest_pkt.flags & MOTION_FLAG_ESTOP)) {
+        rawCommand.linear = g_latest_pkt.linear;
+        rawCommand.angular = g_latest_pkt.angular;
+        active_flags = g_latest_pkt.flags;
     }
 
-    // Step 4: Apply multi-zone collision avoidance safety filter
-    MotionCommand safeCommand = applyCollisionFilter(incomingCommand);
+    // Step 3a: Apply speed mode scaling (Turbo / Precision)
+    MotionCommand scaledCommand = applySpeedMode(rawCommand, active_flags);
+
+    // Step 3b: Determine active command (trick sequencer overrides if active, unscaled)
+    MotionCommand activeCommand = scaledCommand;
+    if (trick_active) {
+        activeCommand = trick_sequencer_get_command();
+    }
+
+    // Step 4: Route active command through collision filter (trick & speed modes ALWAYS filtered!)
+    MotionCommand safeCommand = applyCollisionFilter(activeCommand);
 
     // Step 5: Drive motors with safe filtered velocities
     driveMotors(safeCommand.linear, safeCommand.angular);
@@ -163,16 +238,21 @@ void loop() {
         int16_t right = (int16_t)safeCommand.linear - (int16_t)safeCommand.angular;
         if (left > 100) left = 100; else if (left < -100) left = -100;
         if (right > 100) right = 100; else if (right < -100) right = -100;
-        Serial.printf("[MOTOR] Left: %d%% (PWM %u) | Right: %d%% (PWM %u)\n",
+        const char *mode_name = getSpeedModeName(active_flags);
+        Serial.printf("[MOTOR] Left: %d%% (PWM %u) | Right: %d%% (PWM %u)%s%s%s\n",
                       left, (abs(left) * 255) / 100,
-                      right, (abs(right) * 255) / 100);
+                      right, (abs(right) * 255) / 100,
+                      trick_active ? " [TRICK ACTIVE]" : "",
+                      (mode_name && mode_name[0]) ? " [" : "",
+                      (mode_name && mode_name[0]) ? mode_name : "",
+                      (mode_name && mode_name[0]) ? "]" : "");
     }
 
     // Failsafe timeout diagnostic log (once per second)
-    if (is_timeout) {
+    if (is_timeout && !trick_active) {
         if (now_ms - g_last_timeout_log_ms >= 1000) {
             if (age_ms == UINT32_MAX) {
-                Serial.println(F("[FAILSAFE] No signal from controller: waiting for initial packets..."));
+                Serial.println(F("[FAILSAFE] No signal from either transport: waiting for initial packets..."));
             } else {
                 Serial.printf("[FAILSAFE] No signal from controller: packet age %ums > 400ms timeout\n", age_ms);
             }
@@ -184,13 +264,17 @@ void loop() {
     char ip_str[24];
     snprintf(ip_str, sizeof(ip_str), "%s", WiFi.localIP().toString().c_str());
 
+    const char *transport_str = "NONE";
+    if (g_latest_transport == TRANSPORT_WS) transport_str = "WS";
+    else if (g_latest_transport == TRANSPORT_UDP) transport_str = "UDP";
+
     OledTelemetryData telem;
     telem.wifi_ip = ip_str;
     telem.wifi_connected = (WiFi.status() == WL_CONNECTED);
-    telem.packet_rate_hz = g_last_stats.rate_hz;
+    telem.packet_rate_hz = g_active_packet_rate_hz;
     telem.signal_timeout = is_timeout;
-    telem.in_linear = incomingCommand.linear;
-    telem.in_angular = incomingCommand.angular;
+    telem.in_linear = activeCommand.linear;
+    telem.in_angular = activeCommand.angular;
     telem.out_linear = safeCommand.linear;
     telem.out_angular = safeCommand.angular;
     telem.us_left_cm = getDistanceCm(US_POS_FRONT_LEFT);
@@ -204,6 +288,8 @@ void loop() {
     telem.ir_sl = isTriggered(IR_POS_SIDE_LEFT);
     telem.ir_sr = isTriggered(IR_POS_SIDE_RIGHT);
     telem.ir_rc = isTriggered(IR_POS_REAR_CENTER);
+    telem.active_transport = transport_str;
+    telem.speed_mode = getSpeedModeName(active_flags);
 
     oled_debug_update(&telem, now_ms, false);
 

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>ESP32 Robot HUD Controller</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20%22100%22%20%22100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+</head>
+<body>
+    <div class="hud-container">
+        <!-- Fixed Header -->
+        <header class="hud-header">
+            <div class="header-left">
+                <span class="robot-title">ROBOT-HUD</span>
+                <div class="connection-indicator font-mono">
+                    <span id="status-dot" class="status-dot disconnected"></span>
+                    <span id="status-text">CONNECTING</span>
+                </div>
+                <div class="packet-rate-indicator font-mono">
+                    <span id="packet-rate">0 Hz</span>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <div class="telemetry-display font-mono">
+                    <span id="telem-linear" class="telem-metric">L:+000%</span>
+                    <span id="telem-angular" class="telem-metric">A:+000%</span>
+                    <span id="telem-mode-badge" class="hud-badge badge-normal">NORM</span>
+                </div>
+                <button type="button" class="icon-btn" id="settings-btn" title="Connection Settings" aria-label="Settings">⚙</button>
+            </div>
+        </header>
+
+        <!-- Tab Bar -->
+        <nav class="hud-tab-bar" aria-label="Control Modes">
+            <button type="button" class="hud-tab-btn active" data-tab="traditional">TRADITIONAL</button>
+            <button type="button" class="hud-tab-btn" data-tab="wasd">WASD</button>
+            <button type="button" class="hud-tab-btn" data-tab="joystick">JOYSTICK</button>
+            <button type="button" class="hud-tab-btn" data-tab="gesture">GESTURE</button>
+        </nav>
+
+        <!-- Main Tab View Container -->
+        <main class="hud-tab-view" id="tab-view-container" role="region" aria-live="polite">
+            <!-- Dynamically mounted tab content -->
+        </main>
+
+        <!-- Fixed Footer Strip (Persistent E-Stop & Fun Trick) -->
+        <footer class="hud-footer">
+            <button type="button" class="hud-btn footer-btn footer-estop-btn" id="global-estop-btn" aria-label="Emergency Stop">
+                <span>🛑 EMERGENCY STOP</span>
+            </button>
+            <button type="button" class="hud-btn footer-btn footer-trick-btn" id="global-trick-btn" aria-label="Trigger Spin Trick">
+                <span>✨ SPIN TRICK</span>
+            </button>
+        </footer>
+    </div>
+
+    <!-- Connection Settings Modal -->
+    <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modal-title">WebSocket Connection</h3>
+                <button type="button" class="icon-btn" id="close-settings-btn" aria-label="Close modal">✕</button>
+            </div>
+            <div class="modal-body">
+                <label for="ws-url-input" class="hud-label">WebSocket Endpoint URL:</label>
+                <input type="text" id="ws-url-input" class="input-field font-mono" placeholder="ws://192.168.1.150:80/ws" spellcheck="false">
+                <p class="hud-hint">Default connects to current host on port 80 (<code>/ws</code>).</p>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-secondary" id="cancel-settings-btn">Cancel</button>
+                <button type="button" class="btn-primary" id="save-settings-btn">Save & Reconnect</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Bootstrap -->
+    <script type="module" src="js/app.js?v=2"></script>
+</body>
+</html>

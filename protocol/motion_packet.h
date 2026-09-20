@@ -21,9 +21,12 @@ extern "C" {
 #define MOTION_PACKET_VERSION     1
 
 // Flag bit masks (flags field)
-#define MOTION_FLAG_ESTOP         (1 << 0)  // Bit 0: Emergency stop
-#define MOTION_FLAG_LOW_CONFIDENCE (1 << 1) // Bit 1: Low confidence gesture
-// Bits 2-7: Reserved for future flag usage
+#define MOTION_FLAG_ESTOP          (1 << 0)  // Bit 0: Emergency stop
+#define MOTION_FLAG_LOW_CONFIDENCE (1 << 1)  // Bit 1: Low confidence gesture
+#define MOTION_FLAG_FUN_TRICK      (1 << 2)  // Bit 2: Fun trick activation (0x04)
+#define MOTION_FLAG_TURBO          (1 << 3)  // Bit 3: Turbo speed mode (0x08)
+#define MOTION_FLAG_PRECISION      (1 << 4)  // Bit 4: Precision speed mode (0x10)
+// Bits 5-7: Reserved for future flag usage
 
 /**
  * @brief 10-byte packed binary motion packet transmitted over UDP.

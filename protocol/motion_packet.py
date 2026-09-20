@@ -14,6 +14,9 @@ MOTION_PACKET_VERSION: int = 1
 # Flag bitmasks (flags byte)
 FLAG_ESTOP: int = 1 << 0           # Bit 0: Emergency stop
 FLAG_LOW_CONFIDENCE: int = 1 << 1  # Bit 1: Low confidence gesture detection
+FLAG_FUN_TRICK: int = 1 << 2       # Bit 2: Fun trick activation (0x04)
+FLAG_TURBO: int = 1 << 3           # Bit 3: Turbo speed mode (0x08)
+FLAG_PRECISION: int = 1 << 4       # Bit 4: Precision speed mode (0x10)
 
 
 @dataclass
@@ -71,6 +74,21 @@ class MotionPacket:
     def is_low_confidence(self) -> bool:
         """Returns True if low confidence flag bit is set."""
         return bool(self.flags & FLAG_LOW_CONFIDENCE)
+
+    @property
+    def is_fun_trick(self) -> bool:
+        """Returns True if fun trick flag bit is set."""
+        return bool(self.flags & FLAG_FUN_TRICK)
+
+    @property
+    def is_turbo(self) -> bool:
+        """Returns True if turbo speed mode flag bit is set."""
+        return bool(self.flags & FLAG_TURBO)
+
+    @property
+    def is_precision(self) -> bool:
+        """Returns True if precision speed mode flag bit is set."""
+        return bool(self.flags & FLAG_PRECISION)
 
     def to_bytes(self) -> bytes:
         """Serialize packet to 10-byte packed binary payload."""

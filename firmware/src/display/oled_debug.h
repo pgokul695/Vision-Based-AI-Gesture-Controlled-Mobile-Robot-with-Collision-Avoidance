@@ -39,6 +39,9 @@ typedef struct {
     bool ir_sl;
     bool ir_sr;
     bool ir_rc;
+    const char *active_transport; // "UDP" or "WS"
+    bool trick_active;
+    const char *speed_mode;       // "TURBO", "PRECISE", or ""
 } OledTelemetryData;
 
 /**

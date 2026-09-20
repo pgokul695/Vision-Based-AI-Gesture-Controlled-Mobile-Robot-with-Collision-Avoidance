@@ -54,14 +54,15 @@ void oled_debug_update(const OledTelemetryData *data, uint32_t now_ms, bool forc
     g_display.setTextSize(1);
     g_display.setTextColor(SSD1306_WHITE);
 
-    // Row 1: Wi-Fi / UDP Status
+    // Row 1: Wi-Fi / Transport Status
     g_display.setCursor(0, 0);
+    const char *tp = data->active_transport ? data->active_transport : "UDP";
     if (!data->wifi_connected) {
         g_display.print(F("WIFI: CONNECTING..."));
     } else if (data->signal_timeout) {
         g_display.printf("%s [NO SIG]", data->wifi_ip ? data->wifi_ip : "READY");
     } else {
-        g_display.printf("%s %.0fHz", data->wifi_ip ? data->wifi_ip : "", data->packet_rate_hz);
+        g_display.printf("%s %s %.0fHz", data->wifi_ip ? data->wifi_ip : "", tp, data->packet_rate_hz);
     }
 
     // Divider
@@ -70,6 +71,12 @@ void oled_debug_update(const OledTelemetryData *data, uint32_t now_ms, bool forc
     // Rows 2 & 3: Commanded vs Safe Velocities
     g_display.setCursor(0, 13);
     g_display.printf("IN : L:%+4d  A:%+4d", data->in_linear, data->in_angular);
+    if (data->trick_active) {
+        g_display.print(F(" TRK"));
+    } else if (data->speed_mode && data->speed_mode[0] != '\0') {
+        const char *tag = (strcmp(data->speed_mode, "TURBO") == 0) ? "TRB" : "PRC";
+        g_display.printf(" %s", tag);
+    }
 
     g_display.setCursor(0, 23);
     g_display.printf("OUT: L:%+4d  A:%+4d", data->out_linear, data->out_angular);

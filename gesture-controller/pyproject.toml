@@ -16,6 +16,7 @@ dependencies = [
     "mediapipe>=0.10.0",
     "numpy>=1.24.0",
     "pynput>=1.7.6",
+    "websockets>=12.0.0",
 ]
 
 [project.optional-dependencies]
