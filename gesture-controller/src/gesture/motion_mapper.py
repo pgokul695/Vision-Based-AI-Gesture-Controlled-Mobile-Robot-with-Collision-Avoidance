@@ -13,7 +13,7 @@ MAX_TILT_DEG: float = 40.0         # Hand roll/tilt angle corresponding to 100% 
 THROTTLE_DEADZONE: float = 0.06     # Neutral vertical deadzone (~6% of frame height)
 THROTTLE_FULL_RANGE: float = 0.35   # Range from neutral to full throttle (~35% of frame height)
 NEUTRAL_Y: float = 0.5              # Center of the neutral throttle band (normalized y)
-DEFAULT_MIN_CONFIDENCE: float = 0.6 # Minimum gesture recognition confidence required to drive
+DEFAULT_MIN_CONFIDENCE: float = 0.40 # Minimum gesture recognition confidence required to drive
 
 # Landmark indices defined by MediaPipe Hand model
 LANDMARK_WRIST: int = 0

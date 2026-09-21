@@ -30,9 +30,10 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Target robot IP / hostname")
-    parser.add_argument("--port", type=int, default=8888, help="Target robot UDP port")
+    parser.add_argument("--port", type=int, default=5005, help="Target robot UDP port")
     parser.add_argument("--camera-index", type=int, default=0, help="Webcam device index")
     parser.add_argument("--rate", type=float, default=20.0, help="UDP transmission rate in Hz")
+    parser.add_argument("--min-confidence", type=float, default=0.40, help="Minimum confidence threshold required to drive")
     parser.add_argument("--model-path", type=str, default=None, help="Path to gesture_recognizer.task model file")
     parser.add_argument("--no-gui", action="store_true", help="Run in headless mode without cv2.imshow GUI")
     return parser.parse_args()
@@ -119,7 +120,20 @@ def draw_hud(frame_bgr, cmd: MotionCommand, tracking: Optional[HandTrackingResul
 
 def main():
     args = parse_args()
-    print(f"[CONTROLLER] Target UDP: {args.host}:{args.port}")
+
+    # Normalize host and port if URL syntax was passed (e.g. http://10.29.142.141/)
+    target_host = args.host.strip()
+    target_port = args.port
+    if "://" in target_host:
+        from urllib.parse import urlparse
+        parsed = urlparse(target_host)
+        target_host = parsed.hostname or target_host
+        if parsed.port:
+            target_port = parsed.port
+    else:
+        target_host = target_host.rstrip("/").split(":")[0]
+
+    print(f"[CONTROLLER] Target UDP: {target_host}:{target_port}")
     print(f"[CONTROLLER] Desired transmission rate: {args.rate} Hz")
 
     try:
@@ -137,7 +151,7 @@ def main():
         print("[ERROR] OpenCV (cv2) is required to run the video capture loop.", file=sys.stderr)
         sys.exit(1)
 
-    sender = UdpSender(host=args.host, port=args.port)
+    sender = UdpSender(host=target_host, port=target_port)
     sender.start()
 
     cap = cv2.VideoCapture(args.camera_index)
@@ -179,6 +193,7 @@ def main():
                     landmarks=tracking_res.landmarks,
                     gesture=tracking_res.gesture,
                     gesture_confidence=tracking_res.gesture_confidence,
+                    min_confidence=args.min_confidence,
                 )
             except Exception as e:
                 print(f"[WARN] Error processing frame: {e}")
