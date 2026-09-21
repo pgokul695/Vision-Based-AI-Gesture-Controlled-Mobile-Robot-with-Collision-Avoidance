@@ -148,25 +148,11 @@ export class GestureTab {
         const loadingText = this.container?.querySelector('#gesture-loading-text');
         if (loadingText) loadingText.textContent = 'Loading MediaPipe Vision Library...';
 
-        // Load tasks-vision from CDN if not already loaded globally
-        let vision;
-        try {
-            vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/vision_bundle.js');
-        } catch (e) {
-            console.warn('[GestureTab] CDN module import failed, attempting global fallback:', e);
-            if (window.FilesetResolver && window.GestureRecognizer) {
-                vision = window;
-            } else {
-                throw new Error('Could not load MediaPipe tasks-vision library from CDN or cache.');
-            }
-        }
-
-        const { FilesetResolver, GestureRecognizer } = vision;
+        const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18';
+        const { GestureRecognizer, FilesetResolver } = await import(MP_CDN);
 
         if (loadingText) loadingText.textContent = 'Initializing Vision WASM Engine...';
-        const wasmFileset = await FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm'
-        );
+        const filesetResolver = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`);
 
         if (loadingText) loadingText.textContent = 'Loading Gesture Recognition Model...';
 
@@ -182,7 +168,7 @@ export class GestureTab {
             modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task';
         }
 
-        this.gestureRecognizer = await GestureRecognizer.createFromOptions(wasmFileset, {
+        this.gestureRecognizer = await GestureRecognizer.createFromOptions(filesetResolver, {
             baseOptions: {
                 modelAssetPath: modelAssetPath,
                 delegate: 'GPU'

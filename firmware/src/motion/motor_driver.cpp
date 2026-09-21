@@ -52,10 +52,10 @@ void driveMotors(int8_t linear, int8_t angular) {
   int8_t left = clamp_val((int16_t)linear + (int16_t)angular, -100, 100);
   int8_t right = clamp_val((int16_t)linear - (int16_t)angular, -100, 100);
 
-  driveSide(left, MOTOR_LEFT_ENA_PIN, MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
-            MOTOR_LEFT_PWM_CH);
-  driveSide(right, MOTOR_RIGHT_ENB_PIN, MOTOR_RIGHT_IN3_PIN,
+  driveSide(left, MOTOR_RIGHT_ENB_PIN, MOTOR_RIGHT_IN3_PIN,
             MOTOR_RIGHT_IN4_PIN, MOTOR_RIGHT_PWM_CH);
+  driveSide(right, MOTOR_LEFT_ENA_PIN, MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
+            MOTOR_LEFT_PWM_CH);
 }
 
 void motorDriverInit(void) {
