@@ -18,10 +18,19 @@
 
 #include "motion_packet.h"
 #include "motion/collision_filter.h"
+#include "sensors/ultrasonic.h"
+#include "sensors/ir.h"
+
+// Stubs for sensor hardware queries when testing on host
+extern "C" {
+float getDistanceCm(UltrasonicPosition pos) { (void)pos; return 100.0f; }
+bool ultrasonic_is_stale(UltrasonicPosition pos) { (void)pos; return false; }
+bool isTriggered(IRPosition pos) { (void)pos; return false; }
+}
 
 static void test_clear_path_nominal() {
     printf("Running test_clear_path_nominal...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     MotionPacket cmd = { MOTION_PACKET_MAGIC, MOTION_PACKET_VERSION, 1, 80, 40, 0, {0, 0, 0} };
     UltrasonicArrayReadings us = {
@@ -44,7 +53,7 @@ static void test_clear_path_nominal() {
 
 static void test_failsafe_timeout() {
     printf("Running test_failsafe_timeout...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     MotionPacket cmd = { MOTION_PACKET_MAGIC, MOTION_PACKET_VERSION, 2, 70, 20, 0, {0, 0, 0} };
     SafeMotionOutput out;
@@ -60,7 +69,7 @@ static void test_failsafe_timeout() {
 
 static void test_estop_flag() {
     printf("Running test_estop_flag...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     MotionPacket cmd = {
         MOTION_PACKET_MAGIC,
@@ -81,7 +90,7 @@ static void test_estop_flag() {
 
 static void test_front_ir_hard_stop() {
     printf("Running test_front_ir_hard_stop...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     MotionPacket cmd = { MOTION_PACKET_MAGIC, MOTION_PACKET_VERSION, 4, 60, 0, 0, {0, 0, 0} };
     IRReadings ir = { true, false, false, false, false, 1000 }; // Front-left triggered
@@ -101,7 +110,7 @@ static void test_front_ir_hard_stop() {
 
 static void test_front_ultrasonic_slowdown_and_stop() {
     printf("Running test_front_ultrasonic_slowdown_and_stop...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     MotionPacket cmd = { MOTION_PACKET_MAGIC, MOTION_PACKET_VERSION, 5, 100, 0, 0, {0, 0, 0} };
     UltrasonicArrayReadings us = {
@@ -126,7 +135,7 @@ static void test_front_ultrasonic_slowdown_and_stop() {
 
 static void test_side_and_rear_ir_gates() {
     printf("Running test_side_and_rear_ir_gates...\n");
-    collision_filter_init(NULL);
+    collision_filter_init();
 
     // Left turn commanded, side-left IR tripped -> angular must be zeroed
     MotionPacket cmd_left = { MOTION_PACKET_MAGIC, MOTION_PACKET_VERSION, 6, 0, -50, 0, {0, 0, 0} };

@@ -111,17 +111,26 @@ class WasdController:
 
     def on_press(self, key):
         """pynput callback on key press."""
-        from pynput import keyboard
-
         try:
             if hasattr(key, 'char') and key.char:
                 self.register_key_down(key.char)
         except AttributeError:
             pass
 
-        if key == keyboard.Key.esc:
+        # Check for Esc key (works with duck-typed DummyKey or pynput)
+        if getattr(key, 'name', None) == 'esc':
             self.running = False
             return False
+
+        try:
+            import sys
+            if 'pynput.keyboard' in sys.modules:
+                kb = sys.modules['pynput.keyboard']
+                if key == kb.Key.esc:
+                    self.running = False
+                    return False
+        except Exception:
+            pass
 
     def on_release(self, key):
         """pynput callback on key release."""
