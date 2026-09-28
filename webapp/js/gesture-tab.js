@@ -1,9 +1,7 @@
 /**
  * @file gesture-tab.js
- * @brief MediaPipe Tasks Vision GestureRecognizer tab with camera HUD and deadman switch.
- *
- * Implements continuous tilt/throttle mapping ported directly from
- * gesture-controller/src/gesture/motion_mapper.py.
+ * @brief MediaPipe Tasks Vision GestureRecognizer tab with pure GesturePipeline,
+ *        canvas HUD overlay, and client-side settings persistence.
  */
 
 import {
@@ -11,19 +9,9 @@ import {
     FLAG_LOW_CONFIDENCE,
     FLAG_FUN_TRICK,
     FLAG_TURBO,
-    FLAG_PRECISION
-} from './protocol.js';
-
-// Tuning constants matching motion_mapper.py
-const MAX_TILT_DEG = 40.0;
-const THROTTLE_DEADZONE = 0.06;
-const THROTTLE_FULL_RANGE = 0.35;
-const NEUTRAL_Y = 0.5;
-const DEFAULT_MIN_CONFIDENCE = 0.40;
-
-const LANDMARK_WRIST = 0;
-const LANDMARK_INDEX_MCP = 5;
-const LANDMARK_PINKY_MCP = 17;
+    FLAG_PRECISION,
+    GesturePipeline
+} from './gesture-pipeline.js';
 
 export class GestureTab {
     constructor() {
@@ -33,22 +21,35 @@ export class GestureTab {
         this.canvasCtx = null;
         this.stream = null;
         this.animFrameId = null;
+        this.videoCallbackId = null;
 
         this.gestureRecognizer = null;
-        this.isInitializing = false;
         this.isReady = false;
-        this.hasCameraError = false;
+        this.hasConfigError = false;
+
+        this.config = null;
+        this.pipeline = null;
+
+        // Current settings (hydrated from config + localStorage)
+        this.settings = {
+            controlMode: 'classic',
+            smoothingPreset: 'medium',
+            sensitivity: 1.0,
+            mirrorPreview: true,
+            showDebug: false
+        };
 
         // Command output state
         this.linear = 0;
         this.angular = 0;
         this.flags = FLAG_LOW_CONFIDENCE;
+        this.lastStepResult = null;
 
-        // Current detection telemetry
-        this.currentGesture = 'None';
-        this.currentConfidence = 0;
-        this.trickTriggered = false;
-        this.lastTrickGesture = false;
+        // FPS and latency telemetry
+        this.fps = 0.0;
+        this.latencyMs = 0.0;
+        this.frameCount = 0;
+        this.fpsStartTime = performance.now();
 
         this._processVideoFrame = this._processVideoFrame.bind(this);
     }
@@ -59,8 +60,9 @@ export class GestureTab {
             <div class="gesture-control-panel">
                 <div class="gesture-header">
                     <div class="gesture-status-bar font-mono">
+                        <span>STATE: <strong id="gst-state">IDLE</strong></span>
                         <span>GESTURE: <strong id="gst-label">DETECTING...</strong></span>
-                        <span>CONF: <strong id="gst-conf">00%</strong></span>
+                        <span>MODE: <strong id="gst-mode">NORMAL</strong></span>
                         <span>OUT: <strong id="gst-out">L:+00 A:+00</strong></span>
                     </div>
                 </div>
@@ -69,41 +71,33 @@ export class GestureTab {
                     <div id="gesture-error-banner" class="gesture-error-banner hidden">
                         <div class="banner-icon">⚠️</div>
                         <div class="banner-content">
-                            <h4 id="gst-err-title">Camera Access Restricted</h4>
-                            <p id="gst-err-msg">
-                                Camera access requires a Secure Context (HTTPS or localhost).
-                                When serving directly from ESP32 plain HTTP (<code>http://...</code>), mobile browsers disable the webcam.
-                            </p>
-                            <p class="banner-footnote">
-                                <strong>Workarounds:</strong>
-                                <br>1. Traditional Nav, WASD, and Joystick tabs work 100% on plain HTTP.
-                                <br>2. To test Gesture tab on phone/laptop, run a local HTTPS server or configure Chrome's <code>unsafely-treat-insecure-origin-as-secure</code> flag.
-                            </p>
+                            <h4 id="gst-err-title">Notice</h4>
+                            <p id="gst-err-msg"></p>
                         </div>
                     </div>
 
                     <div class="video-wrapper" id="video-wrapper">
-                        <video id="gesture-video" playsinline muted autoplay></video>
-                        <canvas id="gesture-canvas"></canvas>
-                        <div class="camera-crosshairs">
-                            <div class="crosshair-neutral-band">
-                                <span>NEUTRAL THROTTLE ZONE</span>
+                        <video id="gesture-video" class="mirrored" playsinline muted autoplay></video>
+                        <canvas id="gesture-canvas" class="mirrored"></canvas>
+                        <div class="camera-crosshairs" id="camera-crosshairs">
+                            <div class="crosshair-neutral-band" id="crosshair-band">
+                                <span>NEUTRAL ZONE</span>
                             </div>
                         </div>
                     </div>
 
                     <div id="gesture-loading" class="gesture-loading-overlay">
                         <div class="spinner"></div>
-                        <p id="gesture-loading-text">Loading MediaPipe Gesture Model...</p>
+                        <p id="gesture-loading-text">Loading Gesture Controller...</p>
                     </div>
                 </div>
 
                 <div class="gesture-legend">
-                    <div class="legend-item"><span class="legend-key">✋ Open Palm</span>: Continuous Tilt & Throttle</div>
-                    <div class="legend-item"><span class="legend-key">✊ Closed Fist</span>: Emergency Stop</div>
-                    <div class="legend-item"><span class="legend-key">👍 Thumb Up</span>: Turbo Speed (1.3x)</div>
-                    <div class="legend-item"><span class="legend-key">✌️ Victory</span>: Precision Mode (0.5x)</div>
-                    <div class="legend-item"><span class="legend-key">🤟 I Love You</span>: 360° Spin Trick</div>
+                    <div class="legend-item"><span class="legend-key">✋ Open Palm</span>: Continuous Drive</div>
+                    <div class="legend-item"><span class="legend-key">✊ Closed Fist</span>: Instant E-Stop</div>
+                    <div class="legend-item"><span class="legend-key">👍 Thumb Up</span>: Latch Turbo</div>
+                    <div class="legend-item"><span class="legend-key">✌️ Victory</span>: Latch Precision</div>
+                    <div class="legend-item"><span class="legend-key">🤟 I Love You</span>: Spin Trick</div>
                 </div>
             </div>
         `;
@@ -116,31 +110,126 @@ export class GestureTab {
     }
 
     async _startPipeline() {
-        // Step 1: Verify Camera Support & Context
+        // Step 1: Load gesture-config.json
+        const configLoaded = await this._loadConfig();
+        if (!configLoaded) {
+            return;
+        }
+
+        // Step 2: Initialize GesturePipeline with settings
+        this._initPipelineWithSettings();
+
+        // Step 3: Check camera access
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             this._showError(
-                'Camera API Unavailable',
-                'Your browser or current connection mode does not support getUserMedia. Mobile browsers require HTTPS for camera access.'
+                'Camera Access Restricted',
+                'Camera API is unavailable. Modern mobile browsers require HTTPS or localhost for webcam access. If running over plain HTTP, use the Traditional Nav, WASD, or Joystick tabs.'
             );
             return;
         }
 
         try {
-            // Step 2: Initialize MediaPipe Tasks Vision
+            // Step 4: Initialize MediaPipe Tasks Vision
             await this._initGestureRecognizer();
 
-            // Step 3: Start Camera Stream
+            // Step 5: Start camera
             await this._startCamera();
 
-            // Step 4: Hide Loading Overlay and Start Recognition Loop
+            // Step 6: Ready! Hide loading and start video frame loop
             const loadingOverlay = this.container?.querySelector('#gesture-loading');
             if (loadingOverlay) loadingOverlay.classList.add('hidden');
             this.isReady = true;
 
-            this._processVideoFrame();
+            this._scheduleNextFrame();
         } catch (err) {
-            console.warn('[GestureTab] Initialization fallback:', err);
-            this._showError('Camera / Model Initialization Note', err.message || err.toString());
+            console.warn('[GestureTab] Initialization error:', err);
+            this._showError('Model / Camera Initialization Note', err.message || err.toString());
+        }
+    }
+
+    async _loadConfig() {
+        const loadingText = this.container?.querySelector('#gesture-loading-text');
+        if (loadingText) loadingText.textContent = 'Loading gesture configuration...';
+
+        try {
+            const resp = await fetch('gesture-config.json');
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+            }
+            this.config = await resp.json();
+            return true;
+        } catch (err) {
+            console.error('[GestureTab] Failed to load gesture-config.json:', err);
+            this._showError(
+                'Gesture Config Error',
+                `Failed to load gesture-config.json: ${err.message}. Other tabs remain functional.`
+            );
+            return false;
+        }
+    }
+
+    _initPipelineWithSettings() {
+        // Read persisted settings from localStorage with fallback
+        this.loadSettings();
+
+        this.pipeline = new GesturePipeline(this.config);
+        this.pipeline.setControlMode(this.settings.controlMode);
+        this.pipeline.setSensitivity(this.settings.sensitivity);
+        this.pipeline.setSmoothingPreset(this.settings.smoothingPreset);
+        this.pipeline.setMirrorPreview(this.settings.mirrorPreview);
+
+        this._applyMirrorClass();
+    }
+
+    loadSettings() {
+        // Fall back to config defaults
+        if (this.config) {
+            this.settings.controlMode = this.config.control_mode || 'classic';
+            this.settings.smoothingPreset = this.config.smoothing_preset || 'medium';
+            this.settings.sensitivity = Number(this.config.sensitivity !== undefined ? this.config.sensitivity : 1.0);
+            this.settings.mirrorPreview = this.config.mirror_preview !== undefined ? Boolean(this.config.mirror_preview) : true;
+        }
+
+        try {
+            const raw = localStorage.getItem('gesture_ergonomics_settings');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed.controlMode) this.settings.controlMode = parsed.controlMode;
+                if (parsed.smoothingPreset) this.settings.smoothingPreset = parsed.smoothingPreset;
+                if (parsed.sensitivity !== undefined) this.settings.sensitivity = Number(parsed.sensitivity);
+                if (parsed.mirrorPreview !== undefined) this.settings.mirrorPreview = Boolean(parsed.mirrorPreview);
+                if (parsed.showDebug !== undefined) this.settings.showDebug = Boolean(parsed.showDebug);
+            }
+        } catch (e) {
+            console.warn('[GestureTab] Could not load localStorage settings:', e);
+        }
+    }
+
+    saveSettings(newSettings) {
+        Object.assign(this.settings, newSettings);
+        try {
+            localStorage.setItem('gesture_ergonomics_settings', JSON.stringify(this.settings));
+        } catch (e) {
+            console.warn('[GestureTab] Could not save settings to localStorage:', e);
+        }
+
+        if (this.pipeline) {
+            this.pipeline.setControlMode(this.settings.controlMode);
+            this.pipeline.setSensitivity(this.settings.sensitivity);
+            this.pipeline.setSmoothingPreset(this.settings.smoothingPreset);
+            this.pipeline.setMirrorPreview(this.settings.mirrorPreview);
+        }
+
+        this._applyMirrorClass();
+    }
+
+    _applyMirrorClass() {
+        const mirror = this.settings.mirrorPreview;
+        if (this.videoElement) {
+            this.videoElement.className = mirror ? 'mirrored' : 'unmirrored';
+        }
+        if (this.canvasElement) {
+            this.canvasElement.className = mirror ? 'mirrored' : 'unmirrored';
         }
     }
 
@@ -156,29 +245,35 @@ export class GestureTab {
 
         if (loadingText) loadingText.textContent = 'Loading Gesture Recognition Model...';
 
-        // Attempt local model first, fallback to CDN
-        let modelAssetPath = '/models/gesture_recognizer.task';
+        let modelAssetPath = 'models/gesture_recognizer.task';
         try {
             const checkResp = await fetch(modelAssetPath, { method: 'HEAD' });
-            if (!checkResp.ok) {
-                throw new Error('Local model not found');
-            }
+            if (!checkResp.ok) throw new Error('Local model not found');
         } catch (_) {
-            // Fallback to Google CDN model
             modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task';
         }
 
-        this.gestureRecognizer = await GestureRecognizer.createFromOptions(filesetResolver, {
-            baseOptions: {
-                modelAssetPath: modelAssetPath,
-                delegate: 'GPU'
-            },
+        const recognizerOptions = {
             runningMode: 'VIDEO',
             numHands: 1,
             minHandDetectionConfidence: 0.5,
             minHandPresenceConfidence: 0.5,
             minTrackingConfidence: 0.5
-        });
+        };
+
+        // Try GPU delegate first, fallback to CPU
+        try {
+            this.gestureRecognizer = await GestureRecognizer.createFromOptions(filesetResolver, {
+                baseOptions: { modelAssetPath: modelAssetPath, delegate: 'GPU' },
+                ...recognizerOptions
+            });
+        } catch (gpuErr) {
+            console.warn('[GestureTab] GPU delegate failed, falling back to CPU:', gpuErr);
+            this.gestureRecognizer = await GestureRecognizer.createFromOptions(filesetResolver, {
+                baseOptions: { modelAssetPath: modelAssetPath, delegate: 'CPU' },
+                ...recognizerOptions
+            });
+        }
     }
 
     async _startCamera() {
@@ -214,230 +309,274 @@ export class GestureTab {
         this.canvasElement.height = height;
     }
 
-    _processVideoFrame() {
+    _scheduleNextFrame() {
+        if (!this.isReady) return;
+
+        if (this.videoElement && 'requestVideoFrameCallback' in this.videoElement) {
+            this.videoCallbackId = this.videoElement.requestVideoFrameCallback((now, metadata) => {
+                this._processVideoFrame(now, metadata);
+            });
+        } else {
+            this.animFrameId = requestAnimationFrame((now) => {
+                this._processVideoFrame(now);
+            });
+        }
+    }
+
+    _processVideoFrame(nowInMs, metadata = null) {
         if (!this.isReady || !this.videoElement || this.videoElement.paused || this.videoElement.ended) {
-            this.animFrameId = requestAnimationFrame(this._processVideoFrame);
+            this._scheduleNextFrame();
             return;
         }
 
-        const nowInMs = performance.now();
+        const frameStartTime = performance.now();
         let results = null;
 
         try {
             if (this.videoElement.readyState >= 2 && this.gestureRecognizer) {
-                results = this.gestureRecognizer.recognizeForVideo(this.videoElement, nowInMs);
+                results = this.gestureRecognizer.recognizeForVideo(this.videoElement, frameStartTime);
             }
         } catch (err) {
-            console.warn('[GestureTab] Recognition frame error:', err);
+            console.warn('[GestureTab] Recognition error:', err);
         }
 
-        this._handleRecognitionResult(results);
-        this._renderOverlay(results);
+        this.latencyMs = performance.now() - frameStartTime;
 
-        this.animFrameId = requestAnimationFrame(this._processVideoFrame);
+        // Calculate FPS
+        this.frameCount++;
+        const elapsed = performance.now() - this.fpsStartTime;
+        if (elapsed >= 1000) {
+            this.fps = (this.frameCount * 1000) / elapsed;
+            this.frameCount = 0;
+            this.fpsStartTime = performance.now();
+        }
+
+        // Construct frame input
+        const width = this.videoElement.videoWidth || 640;
+        const height = this.videoElement.videoHeight || 480;
+        const firstHandLandmarks = results?.landmarks?.[0] || null;
+        const firstGesture = results?.gestures?.[0]?.[0] || null;
+
+        const frameInput = {
+            landmarks: firstHandLandmarks,
+            gesture: firstGesture ? firstGesture.categoryName : null,
+            confidence: firstGesture ? firstGesture.score : 0.0,
+            width: width,
+            height: height
+        };
+
+        if (this.pipeline) {
+            const stepResult = this.pipeline.step(frameInput, frameStartTime);
+            this.linear = stepResult.linear;
+            this.angular = stepResult.angular;
+            this.flags = stepResult.flags;
+            this.lastStepResult = stepResult;
+
+            this._updateUI(stepResult, frameInput);
+            this._renderOverlay(stepResult, results, width, height);
+        }
+
+        this._scheduleNextFrame();
     }
 
-    _handleRecognitionResult(results) {
-        if (!results || !results.landmarks || results.landmarks.length === 0 || !results.gestures || results.gestures.length === 0) {
-            this._setZeroState('No Hand', 0);
-            return;
-        }
-
-        const landmarks = results.landmarks[0];
-        const gestureCandidate = results.gestures[0][0];
-
-        if (!gestureCandidate) {
-            this._setZeroState('Unknown', 0);
-            return;
-        }
-
-        const gestureName = gestureCandidate.categoryName;
-        const score = gestureCandidate.score;
-        this.currentGesture = gestureName;
-        this.currentConfidence = Math.round(score * 100);
-
-        // Fun trick rising edge detection
-        const isTrickGesture = (gestureName === 'ILoveYou');
-        if (isTrickGesture && !this.lastTrickGesture) {
-            this.trickTriggered = true;
-        }
-        this.lastTrickGesture = isTrickGesture;
-
-        // Hard Emergency Stop
-        if (gestureName === 'Closed_Fist') {
-            this.linear = 0;
-            this.angular = 0;
-            this.flags = FLAG_ESTOP;
-            this._updateUI(this.linear, this.angular, 'E-STOP');
-            return;
-        }
-
-        // Low confidence deadman stop
-        if (score < DEFAULT_MIN_CONFIDENCE) {
-            this.linear = 0;
-            this.angular = 0;
-            this.flags = FLAG_LOW_CONFIDENCE;
-            this._updateUI(this.linear, this.angular, 'LOW CONF');
-            return;
-        }
-
-        // Deadman switch: Active driving allowed on Open_Palm, Thumb_Up (Turbo), or Victory (Precision)
-        const canDrive = ['Open_Palm', 'Thumb_Up', 'Victory'].includes(gestureName);
-        if (!canDrive) {
-            this.linear = 0;
-            this.angular = 0;
-            this.flags = 0;
-            if (this.trickTriggered) {
-                this.flags |= FLAG_FUN_TRICK;
-                this.trickTriggered = false;
-            }
-            this._updateUI(this.linear, this.angular, 'HOLD / IDLE');
-            return;
-        }
-
-        // --- Continuous Differential Drive Math (Ported from motion_mapper.py) ---
-        const wrist = landmarks[LANDMARK_WRIST];
-        const indexMcp = landmarks[LANDMARK_INDEX_MCP];
-        const pinkyMcp = landmarks[LANDMARK_PINKY_MCP];
-
-        // 1. Steering via Knuckle Line Tilt Angle
-        // Note: Camera feed is mirrored visually, so right-tilt = positive angular
-        const dx = pinkyMcp.x - indexMcp.x;
-        const dy = pinkyMcp.y - indexMcp.y;
-        let angleDeg = Math.atan2(dy, dx) * (180.0 / Math.PI);
-
-        if (angleDeg > 90.0) angleDeg -= 180.0;
-        else if (angleDeg < -90.0) angleDeg += 180.0;
-
-        const clampedAngle = Math.max(-MAX_TILT_DEG, Math.min(MAX_TILT_DEG, angleDeg));
-        let angular = Math.round((clampedAngle / MAX_TILT_DEG) * 100.0);
-        angular = Math.max(-100, Math.min(100, angular));
-
-        // 2. Linear Throttle via Wrist Vertical Height
-        const wristY = wrist.y;
-        const effectiveRange = THROTTLE_FULL_RANGE - THROTTLE_DEADZONE;
-        let linear = 0;
-
-        if (effectiveRange > 0) {
-            if (wristY < (NEUTRAL_Y - THROTTLE_DEADZONE)) {
-                // Hand raised above neutral -> Forward (y decreases upwards in video coords)
-                const displacement = (NEUTRAL_Y - THROTTLE_DEADZONE) - wristY;
-                const throttle = Math.min(1.0, displacement / effectiveRange);
-                linear = Math.round(throttle * 100.0);
-            } else if (wristY > (NEUTRAL_Y + THROTTLE_DEADZONE)) {
-                // Hand lowered below neutral -> Reverse (y increases downwards)
-                const displacement = wristY - (NEUTRAL_Y + THROTTLE_DEADZONE);
-                const throttle = Math.min(1.0, displacement / effectiveRange);
-                linear = -Math.round(throttle * 100.0);
-            }
-        }
-        linear = Math.max(-100, Math.min(100, linear));
-
-        let flags = 0;
-        if (gestureName === 'Thumb_Up') {
-            flags |= FLAG_TURBO;
-        } else if (gestureName === 'Victory') {
-            flags |= FLAG_PRECISION;
-        }
-
-        if (this.trickTriggered) {
-            flags |= FLAG_FUN_TRICK;
-            this.trickTriggered = false;
-        }
-
-        this.linear = linear;
-        this.angular = angular;
-        this.flags = flags;
-
-        const modeTag = (flags & FLAG_TURBO) ? 'TURBO' : (flags & FLAG_PRECISION) ? 'PREC' : 'DRIVE';
-        this._updateUI(this.linear, this.angular, modeTag);
-    }
-
-    _setZeroState(label, conf) {
-        this.currentGesture = label;
-        this.currentConfidence = conf;
-        this.linear = 0;
-        this.angular = 0;
-        this.flags = FLAG_LOW_CONFIDENCE;
-        this._updateUI(0, 0, 'DEADMAN STOP');
-    }
-
-    _updateUI(lin, ang, mode) {
+    _updateUI(stepResult, frameInput) {
+        const stateEl = this.container?.querySelector('#gst-state');
         const labelEl = this.container?.querySelector('#gst-label');
-        const confEl = this.container?.querySelector('#gst-conf');
+        const modeEl = this.container?.querySelector('#gst-mode');
         const outEl = this.container?.querySelector('#gst-out');
 
-        if (labelEl) labelEl.textContent = `${this.currentGesture} (${mode})`;
-        if (confEl) confEl.textContent = `${this.currentConfidence}%`;
+        const debug = stepResult.debug;
+        const state = debug.state;
+        const latchedMode = debug.latched_mode;
+
+        if (stateEl) {
+            stateEl.textContent = state;
+            const stateColors = {
+                IDLE: 'var(--text-muted)',
+                ENGAGING: 'var(--accent-amber)',
+                DRIVING: 'var(--status-green)',
+                GRACE: '#f97316',
+                ESTOP: 'var(--status-red)'
+            };
+            stateEl.style.color = stateColors[state] || 'var(--text-primary)';
+        }
+
+        if (labelEl) {
+            const gName = frameInput.gesture || 'None';
+            const conf = Math.round(frameInput.confidence * 100);
+            labelEl.textContent = `${gName} (${conf}%)`;
+        }
+
+        if (modeEl) {
+            modeEl.textContent = latchedMode;
+            if (latchedMode === 'TURBO') modeEl.style.color = 'var(--status-yellow)';
+            else if (latchedMode === 'PRECISION') modeEl.style.color = 'var(--status-blue)';
+            else modeEl.style.color = 'var(--text-muted)';
+        }
+
         if (outEl) {
-            const lStr = (lin >= 0 ? '+' : '') + lin.toString().padStart(3, '0');
-            const aStr = (ang >= 0 ? '+' : '') + ang.toString().padStart(3, '0');
+            const lStr = (this.linear >= 0 ? '+' : '') + this.linear.toString().padStart(3, '0');
+            const aStr = (this.angular >= 0 ? '+' : '') + this.angular.toString().padStart(3, '0');
             outEl.textContent = `L:${lStr} A:${aStr}`;
         }
     }
 
-    _renderOverlay(results) {
+    _renderOverlay(stepResult, results, width, height) {
         if (!this.canvasCtx || !this.canvasElement) return;
         const ctx = this.canvasCtx;
-        const w = this.canvasElement.width;
-        const h = this.canvasElement.height;
 
-        ctx.clearRect(0, 0, w, h);
+        ctx.clearRect(0, 0, width, height);
 
-        if (!results || !results.landmarks || results.landmarks.length === 0) {
-            return;
-        }
+        const debug = stepResult.debug;
+        const state = debug.state;
+        const anchor = debug.anchor;
+        const smoothedHand = debug.smoothed_hand;
+        const controlMode = debug.control_mode;
+        const isMirrored = this.settings.mirrorPreview;
 
-        const landmarks = results.landmarks[0];
+        // Note on coordinate conversion for canvas:
+        // When video and canvas are mirrored by CSS (scaleX(-1)),
+        // points rendered at raw camera coordinates X_raw = width - X_user align with the mirrored video.
+        // When unmirrored, points rendered at X_raw align with the unmirrored video.
+        const toCanvasX = (userX) => {
+            return width - userX;
+        };
 
-        // Draw connections / skeleton
-        ctx.strokeStyle = '#f59e0b'; // Amber accent
-        ctx.lineWidth = 3;
-        ctx.fillStyle = '#10b981';  // Green landmark dots
+        const stateHex = {
+            IDLE: '#9ca3af',
+            ENGAGING: '#f59e0b',
+            DRIVING: '#10b981',
+            GRACE: '#f97316',
+            ESTOP: '#ef4444'
+        }[state] || '#10b981';
 
-        // Simple skeleton connections
-        const connections = [
-            [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
-            [0, 5], [5, 6], [6, 7], [7, 8],       // Index
-            [5, 9], [9, 10], [10, 11], [11, 12],  // Middle
-            [9, 13], [13, 14], [14, 15], [15, 16],// Ring
-            [13, 17], [17, 18], [18, 19], [19, 20],// Pinky
-            [0, 17]                               // Palm base
-        ];
+        // 1. Draw Skeleton if landmarks present
+        if (results && results.landmarks && results.landmarks.length > 0) {
+            const rawLms = results.landmarks[0];
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+            ctx.lineWidth = 2;
 
-        ctx.beginPath();
-        for (const [start, end] of connections) {
-            const p1 = landmarks[start];
-            const p2 = landmarks[end];
-            ctx.moveTo(p1.x * w, p1.y * h);
-            ctx.lineTo(p2.x * w, p2.y * h);
-        }
-        ctx.stroke();
-
-        // Highlight Knuckle tilt line
-        const pIndex = landmarks[LANDMARK_INDEX_MCP];
-        const pPinky = landmarks[LANDMARK_PINKY_MCP];
-        ctx.strokeStyle = '#38bdf8'; // Cyan tilt line
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(pIndex.x * w, pIndex.y * h);
-        ctx.lineTo(pPinky.x * w, pPinky.y * h);
-        ctx.stroke();
-
-        // Draw landmarks
-        for (let i = 0; i < landmarks.length; i++) {
-            const p = landmarks[i];
-            const px = p.x * w;
-            const py = p.y * h;
+            const connections = [
+                [0, 1], [1, 2], [2, 3], [3, 4],
+                [0, 5], [5, 6], [6, 7], [7, 8],
+                [5, 9], [9, 10], [10, 11], [11, 12],
+                [9, 13], [13, 14], [14, 15], [15, 16],
+                [13, 17], [17, 18], [18, 19], [19, 20],
+                [0, 17]
+            ];
 
             ctx.beginPath();
-            ctx.arc(px, py, (i === 0 || i === 5 || i === 17) ? 6 : 4, 0, 2 * Math.PI);
+            for (const [start, end] of connections) {
+                const p1 = rawLms[start];
+                const p2 = rawLms[end];
+                ctx.moveTo(p1.x * width, p1.y * height);
+                ctx.lineTo(p2.x * width, p2.y * height);
+            }
+            ctx.stroke();
+        }
+
+        // 2. Control Mode Visuals (Joystick vs Classic)
+        if (controlMode === 'joystick' && anchor) {
+            const ancX = toCanvasX(anchor[0]);
+            const ancY = anchor[1];
+            const scale = debug.smoothed_scale || 80.0;
+            const fullScale = this.config?.mapping?.joystick_full_scale || 1.2;
+            const deadzone = this.config?.mapping?.joystick_deadzone || 0.15;
+
+            // Anchor Ring
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(ancX, ancY, 8, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Deadzone Circle
+            ctx.strokeStyle = 'rgba(156, 163, 175, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.arc(ancX, ancY, deadzone * scale, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Full-Scale Circle
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.arc(ancX, ancY, fullScale * scale, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Vector line to smoothed hand
+            if (smoothedHand) {
+                const handX = toCanvasX(smoothedHand[0]);
+                const handY = smoothedHand[1];
+                ctx.strokeStyle = stateHex;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(ancX, ancY);
+                ctx.lineTo(handX, handY);
+                ctx.stroke();
+            }
+        } else if (controlMode === 'classic') {
+            // Neutral throttle guide line
+            const neutralY = debug.neutral_y || (0.5 * height);
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, neutralY);
+            ctx.lineTo(width, neutralY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Tilt gauge (top right corner)
+            const gaugeX = width - 60;
+            const gaugeY = 60;
+            const gaugeR = 30;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(gaugeX, gaugeY, gaugeR, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            const effTilt = (debug.smoothed_tilt || 0.0) - (debug.neutral_tilt || 0.0);
+            const tiltRad = effTilt * (Math.PI / 180.0);
+            // Tilt needle direction
+            const needleDx = gaugeR * Math.sin(tiltRad);
+            const needleDy = -gaugeR * Math.cos(tiltRad);
+            const canvasNeedleDx = isMirrored ? -needleDx : needleDx;
+
+            ctx.strokeStyle = stateHex;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(gaugeX, gaugeY);
+            ctx.lineTo(gaugeX + canvasNeedleDx, gaugeY + needleDy);
+            ctx.stroke();
+        }
+
+        // 3. Smoothed Hand Position Dot
+        if (smoothedHand) {
+            const handX = toCanvasX(smoothedHand[0]);
+            const handY = smoothedHand[1];
+            ctx.fillStyle = stateHex;
+            ctx.beginPath();
+            ctx.arc(handX, handY, 7, 0, 2 * Math.PI);
             ctx.fill();
+        }
+
+        // 4. Debug readout (if enabled)
+        if (this.settings.showDebug) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(10, 10, 180, 50);
+            ctx.fillStyle = '#10b981';
+            ctx.font = '11px monospace';
+            ctx.fillText(`FPS: ${this.fps.toFixed(1)}`, 16, 28);
+            ctx.fillText(`Latency: ${this.latencyMs.toFixed(1)} ms`, 16, 46);
         }
     }
 
     _showError(title, message) {
-        this.hasCameraError = true;
         const banner = this.container?.querySelector('#gesture-error-banner');
         const titleEl = this.container?.querySelector('#gst-err-title');
         const msgEl = this.container?.querySelector('#gst-err-msg');
@@ -457,12 +596,19 @@ export class GestureTab {
         };
     }
 
+    clearLatches() {
+        if (this.pipeline) {
+            this.pipeline.clearLatches();
+        }
+    }
+
     reset() {
         this.linear = 0;
         this.angular = 0;
         this.flags = FLAG_LOW_CONFIDENCE;
-        this.trickTriggered = false;
-        this.lastTrickGesture = false;
+        if (this.pipeline) {
+            this.pipeline.reset();
+        }
         if (this.canvasCtx && this.canvasElement) {
             this.canvasCtx.clearRect(0, 0, this.canvasElement.width, this.canvasElement.height);
         }
@@ -471,6 +617,11 @@ export class GestureTab {
     destroy() {
         this.reset();
         this.isReady = false;
+
+        if (this.videoCallbackId !== null && this.videoElement && 'cancelVideoFrameCallback' in this.videoElement) {
+            this.videoElement.cancelVideoFrameCallback(this.videoCallbackId);
+            this.videoCallbackId = null;
+        }
 
         if (this.animFrameId) {
             cancelAnimationFrame(this.animFrameId);

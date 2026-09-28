@@ -110,7 +110,7 @@ class RobotApp {
             });
         }
 
-        // Connection Settings Modal
+        // Connection & Gesture Settings Modal
         const settingsBtn = document.getElementById('settings-btn');
         const settingsModal = document.getElementById('settings-modal');
         const closeSettingsBtn = document.getElementById('close-settings-btn');
@@ -118,13 +118,38 @@ class RobotApp {
         const cancelSettingsBtn = document.getElementById('cancel-settings-btn');
         const wsUrlInput = document.getElementById('ws-url-input');
 
-        if (wsUrlInput) {
-            wsUrlInput.value = this.wsClient.url;
+        const modeEl = document.getElementById('setting-control-mode');
+        const smoothEl = document.getElementById('setting-smoothing-preset');
+        const sensEl = document.getElementById('setting-sensitivity');
+        const sensValEl = document.getElementById('setting-sens-val');
+        const mirrorEl = document.getElementById('setting-mirror-preview');
+        const debugEl = document.getElementById('setting-debug-readout');
+
+        const populateSettingsModal = () => {
+            if (wsUrlInput) wsUrlInput.value = this.wsClient.url;
+            const gestureTab = this.tabs.gesture;
+            if (gestureTab) {
+                const s = gestureTab.settings;
+                if (modeEl) modeEl.value = s.controlMode;
+                if (smoothEl) smoothEl.value = s.smoothingPreset;
+                if (sensEl) {
+                    sensEl.value = s.sensitivity;
+                    if (sensValEl) sensValEl.textContent = `${Number(s.sensitivity).toFixed(1)}x`;
+                }
+                if (mirrorEl) mirrorEl.checked = s.mirrorPreview;
+                if (debugEl) debugEl.checked = s.showDebug;
+            }
+        };
+
+        if (sensEl && sensValEl) {
+            sensEl.addEventListener('input', () => {
+                sensValEl.textContent = `${Number(sensEl.value).toFixed(1)}x`;
+            });
         }
 
         if (settingsBtn && settingsModal) {
             settingsBtn.addEventListener('click', () => {
-                if (wsUrlInput) wsUrlInput.value = this.wsClient.url;
+                populateSettingsModal();
                 settingsModal.classList.remove('hidden');
             });
         }
@@ -136,11 +161,24 @@ class RobotApp {
         if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', closeModal);
         if (cancelSettingsBtn) cancelSettingsBtn.addEventListener('click', closeModal);
 
-        if (saveSettingsBtn && settingsModal && wsUrlInput) {
+        if (saveSettingsBtn && settingsModal) {
             saveSettingsBtn.addEventListener('click', () => {
-                const newUrl = wsUrlInput.value.trim();
-                if (newUrl) {
-                    this.wsClient.setUrl(newUrl);
+                if (wsUrlInput) {
+                    const newUrl = wsUrlInput.value.trim();
+                    if (newUrl) {
+                        this.wsClient.setUrl(newUrl);
+                    }
+                }
+                const gestureTab = this.tabs.gesture;
+                if (gestureTab) {
+                    const newSettings = {};
+                    if (modeEl) newSettings.controlMode = modeEl.value;
+                    if (smoothEl) newSettings.smoothingPreset = smoothEl.value;
+                    if (sensEl) newSettings.sensitivity = parseFloat(sensEl.value);
+                    if (mirrorEl) newSettings.mirrorPreview = mirrorEl.checked;
+                    if (debugEl) newSettings.showDebug = debugEl.checked;
+
+                    gestureTab.saveSettings(newSettings);
                 }
                 settingsModal.classList.add('hidden');
             });
@@ -154,6 +192,9 @@ class RobotApp {
             this.wsClient.send(0, 0, 0);
             if (this.activeTab) {
                 this.activeTab.reset();
+            }
+            if (this.tabs.gesture) {
+                this.tabs.gesture.clearLatches();
             }
         };
 
@@ -176,6 +217,11 @@ class RobotApp {
 
         // 1. Mandatory immediate zero command
         this.wsClient.send(0, 0, 0);
+
+        // 2. Clear latches on tab switch
+        if (this.tabs.gesture) {
+            this.tabs.gesture.clearLatches();
+        }
 
         // 2. Teardown current tab
         if (this.activeTab) {

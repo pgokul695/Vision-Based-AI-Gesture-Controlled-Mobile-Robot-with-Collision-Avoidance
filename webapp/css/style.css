@@ -590,7 +590,14 @@ html, body {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transform: scaleX(-1); /* Mirror camera feed */
+}
+
+#gesture-video.mirrored {
+    transform: scaleX(-1);
+}
+
+#gesture-video.unmirrored {
+    transform: scaleX(1);
 }
 
 #gesture-canvas {
@@ -599,8 +606,15 @@ html, body {
     left: 0;
     width: 100%;
     height: 100%;
-    transform: scaleX(-1); /* Mirror landmark overlay to align with video */
     pointer-events: none;
+}
+
+#gesture-canvas.mirrored {
+    transform: scaleX(-1);
+}
+
+#gesture-canvas.unmirrored {
+    transform: scaleX(1);
 }
 
 .camera-crosshairs {
@@ -822,6 +836,63 @@ html, body {
 .input-field:focus {
     outline: none;
     border-color: var(--accent-amber);
+}
+
+.settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-section:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.settings-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-amber);
+    margin-bottom: 2px;
+}
+
+.settings-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.settings-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.checkbox-row {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 4px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.select-field {
+    cursor: pointer;
+}
+
+.slider-field {
+    width: 100%;
+    accent-color: var(--accent-amber);
+    cursor: pointer;
 }
 
 .modal-actions {

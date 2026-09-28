@@ -1,0 +1,53 @@
+{
+  "control_mode": "classic",
+  "mirror_preview": true,
+  "sensitivity": 1.0,
+  "smoothing_preset": "medium",
+  "smoothing_presets": {
+    "low": {
+      "min_cutoff": 2.0,
+      "beta": 0.05,
+      "d_cutoff": 1.0
+    },
+    "medium": {
+      "min_cutoff": 1.0,
+      "beta": 0.01,
+      "d_cutoff": 1.0
+    },
+    "high": {
+      "min_cutoff": 0.5,
+      "beta": 0.005,
+      "d_cutoff": 1.0
+    }
+  },
+  "state_machine": {
+    "enter_conf": 0.7,
+    "exit_conf": 0.4,
+    "engage_frames": 4,
+    "grace_ms": 150,
+    "estop_frames": 2,
+    "estop_conf": 0.5,
+    "trick_hold_ms": 500,
+    "trick_cooldown_ms": 3000,
+    "mode_hold_ms": 400,
+    "mode_timeout_ms": 2000
+  },
+  "mapping": {
+    "tilt_neutral": "calibrate_on_engage",
+    "throttle_neutral": "anchor",
+    "classic_tilt_full_scale": 40.0,
+    "classic_tilt_deadzone": 0.10,
+    "classic_throttle_full_scale": 1.0,
+    "classic_throttle_deadzone": 0.15,
+    "joystick_full_scale": 1.2,
+    "joystick_deadzone": 0.15,
+    "expo": 0.4,
+    "min_hand_scale": 20.0
+  },
+  "ramping": {
+    "accel_rate": 250.0,
+    "decel_rate": 800.0,
+    "steer_rate": 400.0,
+    "steer_decel_rate": 800.0
+  }
+}

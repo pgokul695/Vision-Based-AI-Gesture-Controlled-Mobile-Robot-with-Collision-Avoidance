@@ -56,21 +56,63 @@
         </footer>
     </div>
 
-    <!-- Connection Settings Modal -->
+    <!-- Settings Modal -->
     <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-dialog">
             <div class="modal-header">
-                <h3 class="modal-title" id="modal-title">WebSocket Connection</h3>
+                <h3 class="modal-title" id="modal-title">HUD & Control Settings</h3>
                 <button type="button" class="icon-btn" id="close-settings-btn" aria-label="Close modal">✕</button>
             </div>
             <div class="modal-body">
-                <label for="ws-url-input" class="hud-label">WebSocket Endpoint URL:</label>
-                <input type="text" id="ws-url-input" class="input-field font-mono" placeholder="ws://192.168.1.150:80/ws" spellcheck="false">
-                <p class="hud-hint">Default connects to current host on port 80 (<code>/ws</code>).</p>
+                <!-- Section 1: Connection -->
+                <div class="settings-section">
+                    <h4 class="settings-section-title">WebSocket Connection</h4>
+                    <label for="ws-url-input" class="hud-label">Endpoint URL:</label>
+                    <input type="text" id="ws-url-input" class="input-field font-mono" placeholder="ws://192.168.1.150:80/ws" spellcheck="false">
+                    <p class="hud-hint">Default connects to current host on port 80 (<code>/ws</code>).</p>
+                </div>
+
+                <!-- Section 2: Gesture Settings -->
+                <div class="settings-section">
+                    <h4 class="settings-section-title">Gesture Control Settings</h4>
+                    <div class="settings-grid">
+                        <div class="settings-row">
+                            <label for="setting-control-mode" class="hud-label">Control Mode:</label>
+                            <select id="setting-control-mode" class="input-field select-field">
+                                <option value="classic">Classic (Tilt & Throttle)</option>
+                                <option value="joystick">Joystick (Anchor Displacement)</option>
+                            </select>
+                        </div>
+                        <div class="settings-row">
+                            <label for="setting-smoothing-preset" class="hud-label">Smoothing Preset:</label>
+                            <select id="setting-smoothing-preset" class="input-field select-field">
+                                <option value="low">Low (Fast Response)</option>
+                                <option value="medium">Medium (Balanced)</option>
+                                <option value="high">High (Ultra Smooth)</option>
+                            </select>
+                        </div>
+                        <div class="settings-row">
+                            <label for="setting-sensitivity" class="hud-label">Sensitivity: <span id="setting-sens-val">1.0x</span></label>
+                            <input type="range" id="setting-sensitivity" min="0.2" max="2.5" step="0.1" value="1.0" class="slider-field">
+                        </div>
+                        <div class="settings-row checkbox-row">
+                            <label class="checkbox-label" for="setting-mirror-preview">
+                                <input type="checkbox" id="setting-mirror-preview" checked>
+                                <span>Mirror Camera Preview</span>
+                            </label>
+                        </div>
+                        <div class="settings-row checkbox-row">
+                            <label class="checkbox-label" for="setting-debug-readout">
+                                <input type="checkbox" id="setting-debug-readout">
+                                <span>Show FPS & Latency Debug Readout</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-actions">
                 <button type="button" class="btn-secondary" id="cancel-settings-btn">Cancel</button>
-                <button type="button" class="btn-primary" id="save-settings-btn">Save & Reconnect</button>
+                <button type="button" class="btn-primary" id="save-settings-btn">Save Settings</button>
             </div>
         </div>
     </div>

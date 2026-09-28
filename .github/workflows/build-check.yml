@@ -26,9 +26,22 @@ jobs:
           pip install pytest
           pip install -e gesture-controller/
 
+      - name: Verify Gesture Config Sync
+        run: |
+          python tools/sync_gesture_config.py --check
+
       - name: Run Python Protocol & Controller Unit Tests
         run: |
           python -m pytest gesture-controller/tests/
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run Node.js Pipeline Tests
+        run: |
+          node --test webapp/tests/*.test.js
 
       - name: Compile & Run C++ Collision Filter Unit Tests
         run: |

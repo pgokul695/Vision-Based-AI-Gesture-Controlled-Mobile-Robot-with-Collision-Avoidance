@@ -1,15 +1,17 @@
 """Main application loop for vision-based AI gesture controller.
 
-Captures webcam frames, runs MediaPipe Tasks GestureRecognizer,
-computes differential-drive motion commands via pure hybrid mapping,
-and streams 10-byte binary UDP datagrams at a fixed ~20 Hz rate to the robot.
+Captures webcam frames in a dedicated thread, runs MediaPipe GestureRecognizer,
+evaluates pure GesturePipeline, streams 10-byte binary UDP datagrams to the robot,
+and renders an interactive HUD with real-time controls.
 """
 
 import argparse
+import math
 from pathlib import Path
 import sys
+import threading
 import time
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 # Resolve imports for local modules and shared protocol
 src_dir = Path(__file__).resolve().parent
@@ -20,108 +22,265 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from gesture.hand_tracker import HandTracker, HandTrackingResult
-from gesture.motion_mapper import compute_motion, MotionCommand, NEUTRAL_Y, THROTTLE_DEADZONE
+from gesture.pipeline import GesturePipeline
 from network.udp_sender import UdpSender
+
+
+class CameraCaptureThread:
+    """Dedicated background capture thread that always keeps only the latest frame."""
+
+    def __init__(self, camera_index: int = 0):
+        try:
+            import cv2
+        except ImportError as e:
+            raise ImportError("OpenCV (cv2) is required.") from e
+
+        self.cv2 = cv2
+        self.camera_index = camera_index
+        self.cap = cv2.VideoCapture(camera_index)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.running = False
+        self.lock = threading.Lock()
+        self.latest_frame = None
+        self.frame_timestamp: float = 0.0
+        self.thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if not self.cap.isOpened():
+            raise RuntimeError(f"Could not open camera device at index {self.camera_index}")
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_worker, daemon=True)
+        self.thread.start()
+
+    def _capture_worker(self) -> None:
+        while self.running and self.cap.isOpened():
+            ret, frame = self.cap.read()
+            if ret:
+                now = time.time()
+                with self.lock:
+                    self.latest_frame = frame
+                    self.frame_timestamp = now
+            else:
+                time.sleep(0.01)
+
+    def read_latest(self) -> Tuple[Optional[Any], float]:
+        with self.lock:
+            if self.latest_frame is None:
+                return None, 0.0
+            return self.latest_frame.copy(), self.frame_timestamp
+
+    def stop(self) -> None:
+        self.running = False
+        if self.thread is not None:
+            self.thread.join(timeout=1.0)
+        if self.cap is not None:
+            self.cap.release()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Vision-Based AI Gesture Controller (Hybrid Mapping)",
+        description="Vision-Based AI Gesture Controller (Ergonomics Upgrade)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Target robot IP / hostname")
     parser.add_argument("--port", type=int, default=5005, help="Target robot UDP port")
     parser.add_argument("--camera-index", type=int, default=0, help="Webcam device index")
     parser.add_argument("--rate", type=float, default=20.0, help="UDP transmission rate in Hz")
-    parser.add_argument("--min-confidence", type=float, default=0.40, help="Minimum confidence threshold required to drive")
     parser.add_argument("--model-path", type=str, default=None, help="Path to gesture_recognizer.task model file")
+    parser.add_argument("--mode", type=str, choices=["classic", "joystick"], default=None, help="Control mode")
+    parser.add_argument("--sensitivity", type=float, default=None, help="Sensitivity multiplier")
+    parser.add_argument("--smoothing", type=str, choices=["low", "medium", "high"], default=None, help="Smoothing preset")
+    parser.add_argument("--no-mirror", action="store_true", help="Disable mirror preview display")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug readout")
     parser.add_argument("--no-gui", action="store_true", help="Run in headless mode without cv2.imshow GUI")
     return parser.parse_args()
 
 
-def draw_hud(frame_bgr, cmd: MotionCommand, tracking: Optional[HandTrackingResult], fps: float):
-    """Draws on-screen debug HUD displaying gesture status and motion parameters."""
+def draw_hud(
+    frame_disp,
+    step_result: Dict[str, Any],
+    tracking: Optional[HandTrackingResult],
+    pipeline: GesturePipeline,
+    fps: float,
+    latency_ms: float,
+    show_debug: bool,
+):
+    """Draws on-screen debug HUD displaying gesture status, state colors, and control overlay."""
     try:
         import cv2
     except ImportError:
         return
 
-    h, w = frame_bgr.shape[:2]
+    h, w = frame_disp.shape[:2]
+    debug = step_result["debug"]
+    state = debug["state"]
+    linear = step_result["linear"]
+    angular = step_result["angular"]
+    flags = step_result["flags"]
+    latched_mode = debug["latched_mode"]
+    anchor = debug["anchor"]
+    smoothed_hand = debug["smoothed_hand"]
+    control_mode = pipeline.control_mode
+    is_mirrored = pipeline.mirror_preview
 
-    # Draw neutral throttle guidelines
-    top_deadzone_y = int((NEUTRAL_Y - THROTTLE_DEADZONE) * h)
-    bot_deadzone_y = int((NEUTRAL_Y + THROTTLE_DEADZONE) * h)
-    center_neutral_y = int(NEUTRAL_Y * h)
+    # Helper to map user-space pixel X to display pixel X
+    def to_disp_x(user_x: float) -> int:
+        if is_mirrored:
+            return int(user_x)
+        else:
+            return int(w - user_x)
 
-    cv2.line(frame_bgr, (0, center_neutral_y), (w, center_neutral_y), (100, 100, 100), 1)
-    cv2.line(frame_bgr, (0, top_deadzone_y), (w, top_deadzone_y), (0, 255, 0), 1)
-    cv2.line(frame_bgr, (0, bot_deadzone_y), (w, bot_deadzone_y), (0, 0, 255), 1)
+    # State colors (BGR)
+    state_colors = {
+        "IDLE": (180, 180, 180),       # Gray
+        "ENGAGING": (0, 215, 255),     # Yellow / Amber
+        "DRIVING": (0, 255, 0),        # Green
+        "GRACE": (0, 140, 255),        # Orange
+        "ESTOP": (0, 0, 255),          # Red
+    }
+    banner_color = state_colors.get(state, (200, 200, 200))
 
-    # Status Banner
-    if cmd.estop:
-        status_text = "STATUS: [EMERGENCY STOP (Closed Fist)]"
-        status_color = (0, 0, 255)
-    elif cmd.low_confidence:
-        status_text = "STATUS: [DISARMED / LOW CONFIDENCE]"
-        status_color = (0, 165, 255)
-    elif tracking and tracking.gesture == "Open_Palm":
-        status_text = "STATUS: [ACTIVE DRIVING (Open Palm)]"
-        status_color = (0, 255, 0)
-    else:
-        status_text = "STATUS: [STANDBY]"
-        status_color = (200, 200, 200)
+    # 1. Draw Mode Overlays
+    if control_mode == "joystick" and anchor is not None:
+        anc_disp_x = to_disp_x(anchor[0])
+        anc_disp_y = int(anchor[1])
+        scale = debug.get("smoothed_scale") or 80.0
+        fs_ratio = float(pipeline.map_cfg.get("joystick_full_scale", 1.2))
+        dz_ratio = float(pipeline.map_cfg.get("joystick_deadzone", 0.15))
 
-    # Semi-transparent background panel for text
-    overlay = frame_bgr.copy()
-    cv2.rectangle(overlay, (10, 10), (450, 160), (20, 20, 20), -1)
-    cv2.addWeighted(overlay, 0.7, frame_bgr, 0.3, 0, frame_bgr)
+        # Anchor dot & ring
+        cv2.circle(frame_disp, (anc_disp_x, anc_disp_y), 6, (0, 255, 255), -1)
+        cv2.circle(frame_disp, (anc_disp_x, anc_disp_y), 10, (0, 255, 255), 1)
+
+        # Deadzone circle
+        cv2.circle(frame_disp, (anc_disp_x, anc_disp_y), int(dz_ratio * scale), (100, 100, 100), 1)
+
+        # Full-scale circle
+        cv2.circle(frame_disp, (anc_disp_x, anc_disp_y), int(fs_ratio * scale), (255, 255, 0), 2)
+
+        # Vector line to smoothed hand
+        if smoothed_hand is not None:
+            hand_disp_x = to_disp_x(smoothed_hand[0])
+            hand_disp_y = int(smoothed_hand[1])
+            cv2.line(frame_disp, (anc_disp_x, anc_disp_y), (hand_disp_x, hand_disp_y), (0, 255, 0), 2)
+
+    elif control_mode == "classic":
+        # Neutral horizontal throttle line
+        neutral_y = debug.get("neutral_y") or (0.5 * h)
+        cv2.line(frame_disp, (0, int(neutral_y)), (w, int(neutral_y)), (80, 80, 80), 1)
+
+        # Tilt gauge in top right
+        gauge_cx, gauge_cy = w - 80, 70
+        cv2.circle(frame_disp, (gauge_cx, gauge_cy), 35, (60, 60, 60), 2)
+        tilt_deg = debug.get("smoothed_tilt") or 0.0
+        neutral_tilt = debug.get("neutral_tilt") or 0.0
+        eff_tilt = tilt_deg - neutral_tilt
+
+        # Draw tilt needle
+        tilt_rad = math.radians(eff_tilt)
+        needle_len = 30
+        needle_dx = int(needle_len * math.sin(tilt_rad))
+        needle_dy = int(-needle_len * math.cos(tilt_rad))
+        # Needle direction in display coordinates
+        needle_screen_dx = needle_dx if is_mirrored else -needle_dx
+        cv2.line(frame_disp, (gauge_cx, gauge_cy), (gauge_cx + needle_screen_dx, gauge_cy + needle_dy), (0, 255, 255), 2)
+        cv2.putText(
+            frame_disp,
+            f"TILT: {eff_tilt:+.1f} deg",
+            (gauge_cx - 50, gauge_cy + 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (200, 200, 200),
+            1,
+        )
+
+    # Smoothed hand position dot
+    if smoothed_hand is not None:
+        sh_disp_x = to_disp_x(smoothed_hand[0])
+        sh_disp_y = int(smoothed_hand[1])
+        cv2.circle(frame_disp, (sh_disp_x, sh_disp_y), 7, banner_color, -1)
+
+    # 2. Status HUD Panel
+    overlay = frame_disp.copy()
+    cv2.rectangle(overlay, (10, 10), (420, 180), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.75, frame_disp, 0.25, 0, frame_disp)
+
+    # Header with state color
+    status_text = f"STATE: [{state}]"
+    cv2.putText(frame_disp, status_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.65, banner_color, 2)
 
     gesture_label = tracking.gesture if (tracking and tracking.gesture) else "None"
     conf_val = (tracking.gesture_confidence * 100.0) if (tracking and tracking.gesture_confidence) else 0.0
-
-    cv2.putText(frame_bgr, status_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.55, status_color, 2)
     cv2.putText(
-        frame_bgr,
-        f"Gesture: {gesture_label} ({conf_val:.1f}%)",
+        frame_disp,
+        f"Gesture: {gesture_label} ({conf_val:.0f}%) | Mode: {latched_mode}",
         (20, 65),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.5,
         (255, 255, 255),
         1,
     )
+
     cv2.putText(
-        frame_bgr,
-        f"Linear:  {cmd.linear:+4d}%  |  Angular: {cmd.angular:+4d}%",
+        frame_disp,
+        f"Linear:  {linear:+4d}%   |   Angular: {angular:+4d}%",
         (20, 95),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.55,
-        (255, 255, 255),
-        1,
+        (0, 255, 255),
+        2,
     )
+
     cv2.putText(
-        frame_bgr,
-        f"E-Stop: {cmd.estop}  |  Low-Conf: {cmd.low_confidence}",
+        frame_disp,
+        f"Control: {control_mode.upper()}  |  Sens: {pipeline.sensitivity:.1f}x  |  {pipeline.smoothing_preset}",
         (20, 125),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
+        0.48,
         (200, 200, 200),
         1,
     )
+
+    debug_str = f"FPS: {fps:.1f}"
+    if show_debug:
+        debug_str += f" | Latency: {latency_ms:.1f}ms | Mirror: {is_mirrored}"
+    debug_str += " | [h]elp / [q]uit"
+
     cv2.putText(
-        frame_bgr,
-        f"FPS: {fps:.1f} | Press 'q' to exit",
-        (20, 150),
+        frame_disp,
+        debug_str,
+        (20, 155),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
+        0.42,
         (150, 150, 150),
         1,
     )
 
 
+def print_active_settings(pipeline: GesturePipeline, host: str, port: int, rate: float):
+    print("\n" + "=" * 60)
+    print(" VISION-BASED AI GESTURE CONTROLLER (ERGONOMICS UPGRADE)")
+    print("=" * 60)
+    print(f" Target Robot UDP:      {host}:{port}")
+    print(f" Transmission Rate:     {rate} Hz")
+    print(f" Active Control Mode:   {pipeline.control_mode.upper()}")
+    print(f" Sensitivity:           {pipeline.sensitivity:.1f}x")
+    print(f" Smoothing Preset:      {pipeline.smoothing_preset}")
+    print(f" Mirror Preview:        {pipeline.mirror_preview}")
+    print("-" * 60)
+    print(" Hotkeys in Preview Window:")
+    print("   [m] : Toggle preview mirroring")
+    print("   [j] : Toggle mode (Classic <-> Joystick)")
+    print("   [+] : Increase sensitivity (+0.1)")
+    print("   [-] : Decrease sensitivity (-0.1)")
+    print("   [d] : Toggle debug telemetry (FPS & Latency)")
+    print("   [q] : Quit controller")
+    print("=" * 60 + "\n")
+
+
 def main():
     args = parse_args()
 
-    # Normalize host and port if URL syntax was passed (e.g. http://10.29.142.141/)
     target_host = args.host.strip()
     target_port = args.port
     if "://" in target_host:
@@ -133,30 +292,38 @@ def main():
     else:
         target_host = target_host.rstrip("/").split(":")[0]
 
-    print(f"[CONTROLLER] Target UDP: {target_host}:{target_port}")
-    print(f"[CONTROLLER] Desired transmission rate: {args.rate} Hz")
+    pipeline = GesturePipeline()
+    if args.mode:
+        pipeline.set_control_mode(args.mode)
+    if args.sensitivity is not None:
+        pipeline.set_sensitivity(args.sensitivity)
+    if args.smoothing:
+        pipeline.set_smoothing_preset(args.smoothing)
+    if args.no_mirror:
+        pipeline.set_mirror_preview(False)
+
+    print_active_settings(pipeline, target_host, target_port, args.rate)
 
     try:
         tracker = HandTracker(model_path=args.model_path)
-    except FileNotFoundError as err:
-        print(f"\n[ERROR] {err}\n", file=sys.stderr)
-        sys.exit(1)
-    except ImportError as err:
-        print(f"\n[ERROR] {err}\n", file=sys.stderr)
+    except Exception as err:
+        print(f"\n[ERROR] HandTracker initialization failed: {err}\n", file=sys.stderr)
         sys.exit(1)
 
     try:
         import cv2
     except ImportError:
-        print("[ERROR] OpenCV (cv2) is required to run the video capture loop.", file=sys.stderr)
+        print("[ERROR] OpenCV (cv2) is required.", file=sys.stderr)
         sys.exit(1)
 
     sender = UdpSender(host=target_host, port=target_port)
     sender.start()
 
-    cap = cv2.VideoCapture(args.camera_index)
-    if not cap.isOpened():
-        print(f"[ERROR] Could not open camera device at index {args.camera_index}.", file=sys.stderr)
+    try:
+        cam_thread = CameraCaptureThread(camera_index=args.camera_index)
+        cam_thread.start()
+    except Exception as e:
+        print(f"[ERROR] Camera initialization error: {e}", file=sys.stderr)
         sender.close()
         tracker.close()
         sys.exit(1)
@@ -166,63 +333,105 @@ def main():
     fps = 0.0
     frame_count = 0
     fps_start_time = time.time()
+    show_debug = args.debug
 
-    current_cmd = MotionCommand(linear=0, angular=0, estop=False, low_confidence=True)
+    current_result = {
+        "linear": 0,
+        "angular": 0,
+        "flags": 0,
+        "debug": {
+            "state": "IDLE",
+            "anchor": None,
+            "smoothed_hand": None,
+            "smoothed_tilt": 0.0,
+            "smoothed_scale": 80.0,
+            "pre_ramp_linear": 0,
+            "pre_ramp_angular": 0,
+            "latched_mode": "NORMAL",
+            "neutral_tilt": 0.0,
+            "neutral_y": 240.0,
+        },
+    }
     tracking_res = None
 
-    print("[CONTROLLER] Controller running. Press 'q' or Ctrl+C to quit.")
-
     try:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                print("[WARN] Failed to grab camera frame. Retrying...")
-                time.sleep(0.05)
+        while True:
+            frame_raw, frame_time = cam_thread.read_latest()
+            if frame_raw is None:
+                time.sleep(0.005)
                 continue
 
-            # Mirror frame horizontally for intuitive interaction
-            frame = cv2.flip(frame, 1)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             now = time.time()
             now_ms = int(now * 1000)
+            camera_latency_ms = (now - frame_time) * 1000.0
 
-            # 1. Process hand tracking & gesture recognition
+            h, w = frame_raw.shape[:2]
+            # Convert to RGB without flipping for MediaPipe (user space handled in pipeline)
+            frame_rgb = cv2.cvtColor(frame_raw, cv2.COLOR_BGR2RGB)
+
+            # 1. MediaPipe Gesture Recognition
             try:
                 tracking_res = tracker.process(frame_rgb, timestamp_ms=now_ms)
-                current_cmd = compute_motion(
-                    landmarks=tracking_res.landmarks,
-                    gesture=tracking_res.gesture,
-                    gesture_confidence=tracking_res.gesture_confidence,
-                    min_confidence=args.min_confidence,
-                )
+                frame_input = {
+                    "landmarks": tracking_res.landmarks,
+                    "gesture": tracking_res.gesture,
+                    "confidence": tracking_res.gesture_confidence,
+                    "width": w,
+                    "height": h,
+                }
+                current_result = pipeline.step(frame_input, now_ms)
             except Exception as e:
-                print(f"[WARN] Error processing frame: {e}")
-                current_cmd = MotionCommand(linear=0, angular=0, estop=False, low_confidence=True)
+                print(f"[WARN] Frame processing error: {e}")
 
             # 2. Decoupled UDP Transmission (~20 Hz)
             if (now - last_udp_send_time) >= udp_interval:
+                is_estop = bool(current_result["flags"] & (1 << 0))
+                is_low_conf = bool(current_result["flags"] & (1 << 1))
                 sender.send(
-                    linear=current_cmd.linear,
-                    angular=current_cmd.angular,
-                    estop=current_cmd.estop,
-                    low_confidence=current_cmd.low_confidence,
+                    linear=current_result["linear"],
+                    angular=current_result["angular"],
+                    estop=is_estop,
+                    low_confidence=is_low_conf,
                 )
                 last_udp_send_time = now
 
-            # 3. Calculate display FPS
+            # 3. FPS calculation
             frame_count += 1
             if (now - fps_start_time) >= 1.0:
                 fps = frame_count / (now - fps_start_time)
                 frame_count = 0
                 fps_start_time = now
 
-            # 4. Render HUD and display window
+            # 4. Preview Window Rendering
             if not args.no_gui:
-                draw_hud(frame, current_cmd, tracking_res, fps)
-                cv2.imshow("Gesture Controller (Hybrid)", frame)
+                # Mirroring is a display option only
+                if pipeline.mirror_preview:
+                    display_frame = cv2.flip(frame_raw, 1)
+                else:
+                    display_frame = frame_raw.copy()
+
+                draw_hud(display_frame, current_result, tracking_res, pipeline, fps, camera_latency_ms, show_debug)
+                cv2.imshow("Vision-Based AI Gesture Controller", display_frame)
+
                 key = cv2.waitKey(1) & 0xFF
-                if key in (ord("q"), 27):  # 'q' or ESC
+                if key in (ord("q"), 27):
                     break
+                elif key == ord("m"):
+                    pipeline.set_mirror_preview(not pipeline.mirror_preview)
+                    print(f"[HOTKEY] Mirror preview: {pipeline.mirror_preview}")
+                elif key == ord("j"):
+                    new_mode = "joystick" if pipeline.control_mode == "classic" else "classic"
+                    pipeline.set_control_mode(new_mode)
+                    print(f"[HOTKEY] Control mode: {pipeline.control_mode.upper()}")
+                elif key in (ord("+"), ord("=")):
+                    pipeline.set_sensitivity(min(3.0, pipeline.sensitivity + 0.1))
+                    print(f"[HOTKEY] Sensitivity: {pipeline.sensitivity:.1f}x")
+                elif key in (ord("-"), ord("_")):
+                    pipeline.set_sensitivity(max(0.1, pipeline.sensitivity - 0.1))
+                    print(f"[HOTKEY] Sensitivity: {pipeline.sensitivity:.1f}x")
+                elif key == ord("d"):
+                    show_debug = not show_debug
+                    print(f"[HOTKEY] Debug readout: {show_debug}")
 
     except KeyboardInterrupt:
         print("\n[CONTROLLER] Interrupted by user.")
@@ -232,7 +441,7 @@ def main():
             sender.send(linear=0, angular=0, estop=True, low_confidence=False)
         except Exception:
             pass
-        cap.release()
+        cam_thread.stop()
         if not args.no_gui:
             try:
                 cv2.destroyAllWindows()
