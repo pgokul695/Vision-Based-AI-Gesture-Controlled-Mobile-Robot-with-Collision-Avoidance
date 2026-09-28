@@ -924,3 +924,93 @@ html, body {
 .hidden {
     display: none !important;
 }
+
+/* Gesture Trace Telemetry Panel (?trace=1) */
+.gesture-trace-panel {
+    margin-top: 16px;
+    background-color: var(--card-bg, #161b22);
+    border: 1px solid var(--border-color, #30363d);
+    border-radius: 6px;
+    padding: 12px;
+}
+
+.trace-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.trace-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.trace-badge {
+    background-color: rgba(245, 158, 11, 0.2);
+    color: var(--accent-amber, #f59e0b);
+    border: 1px solid var(--accent-amber, #f59e0b);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.trace-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.trace-actions span {
+    font-size: 11px;
+    color: var(--text-muted, #8b949e);
+}
+
+.trace-table-wrapper {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color, #30363d);
+    border-radius: 4px;
+    background-color: #0d1117;
+}
+
+.trace-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    text-align: left;
+}
+
+.trace-table th {
+    position: sticky;
+    top: 0;
+    background-color: #161b22;
+    color: var(--text-muted, #8b949e);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border-color, #30363d);
+    white-space: nowrap;
+    z-index: 1;
+}
+
+.trace-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    white-space: nowrap;
+    color: var(--text-primary, #c9d1d9);
+}
+
+.trace-table tr:hover td {
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.btn-sm {
+    padding: 4px 10px;
+    font-size: 11px;
+}

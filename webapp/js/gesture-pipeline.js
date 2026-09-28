@@ -14,9 +14,13 @@ export const FLAG_PRECISION = 1 << 4;      // Bit 4: Precision speed mode (0x10)
 
 export const LANDMARK_WRIST = 0;
 export const LANDMARK_INDEX_MCP = 5;
+export const LANDMARK_INDEX_TIP = 8;
 export const LANDMARK_MIDDLE_MCP = 9;
+export const LANDMARK_MIDDLE_TIP = 12;
 export const LANDMARK_RING_MCP = 13;
+export const LANDMARK_RING_TIP = 16;
 export const LANDMARK_PINKY_MCP = 17;
+export const LANDMARK_PINKY_TIP = 20;
 
 export class OneEuroFilter {
     constructor(minCutoff = 1.0, beta = 0.01, dCutoff = 1.0) {
@@ -162,30 +166,42 @@ export class SlewLimiter {
     }
 }
 
-export function applyAxisShaping(val, fullScale, deadzone, sensitivity, expo) {
-    if (fullScale <= 0.0) return 0;
+export function applyAxisShapingTraced(val, fullScale, deadzone, sensitivity, expo, reverseScale = 1.0) {
+    if (fullScale <= 0.0) {
+        return [0, { raw: val, norm: 0.0, after_deadzone: 0.0, after_expo: 0.0, target: 0 }];
+    }
 
-    // 1. Normalize
     const norm = (val / fullScale) * sensitivity;
     const sign = norm > 0.0 ? 1.0 : (norm < 0.0 ? -1.0 : 0.0);
     const mag = Math.abs(norm);
 
-    // 2. Deadzone with rescale
-    if (mag <= deadzone || deadzone >= 1.0) return 0;
+    if (mag <= deadzone || deadzone >= 1.0) {
+        return [0, { raw: val, norm: norm, after_deadzone: 0.0, after_expo: 0.0, target: 0 }];
+    }
 
     let rescaled = (mag - deadzone) / (1.0 - deadzone);
     if (rescaled > 1.0) rescaled = 1.0;
+    const signedRescaled = sign * rescaled;
 
-    // 3. Expo curve
     const y = sign * (expo * Math.pow(rescaled, 3) + (1.0 - expo) * rescaled);
+    const effectiveScale = sign < 0.0 ? reverseScale : 1.0;
+    const scaledY = y * effectiveScale;
+    const out = Math.round(scaledY * 100.0) || 0;
+    const target = Math.max(-100, Math.min(100, out));
 
-    // 4. Scale to +-100 and clamp
-    const out = Math.round(y * 100.0) || 0;
-    return Math.max(-100, min(100, out));
+    const stages = {
+        raw: val,
+        norm: norm,
+        after_deadzone: signedRescaled,
+        after_expo: scaledY,
+        target: target
+    };
+    return [target, stages];
+}
 
-    function min(a, b) {
-        return Math.min(a, b);
-    }
+export function applyAxisShaping(val, fullScale, deadzone, sensitivity, expo, reverseScale = 1.0) {
+    const [target] = applyAxisShapingTraced(val, fullScale, deadzone, sensitivity, expo, reverseScale);
+    return target;
 }
 
 export class GesturePipeline {
@@ -259,8 +275,11 @@ export class GesturePipeline {
                 high: { min_cutoff: 0.5, beta: 0.005, d_cutoff: 1.0 }
             },
             state_machine: {
-                enter_conf: 0.7,
-                exit_conf: 0.4,
+                enter_conf: 0.65,
+                exit_conf: 0.35,
+                open_extension_enter: 1.55,
+                open_extension_exit: 1.30,
+                fist_extension: 1.15,
                 engage_frames: 4,
                 grace_ms: 150,
                 estop_frames: 2,
@@ -275,12 +294,14 @@ export class GesturePipeline {
                 throttle_neutral: 'anchor',
                 classic_tilt_full_scale: 40.0,
                 classic_tilt_deadzone: 0.10,
-                classic_throttle_full_scale: 1.0,
+                classic_throttle_full_scale: 1.2,
                 classic_throttle_deadzone: 0.15,
+                reverse_scale: 0.60,
                 joystick_full_scale: 1.2,
                 joystick_deadzone: 0.15,
                 expo: 0.4,
-                min_hand_scale: 20.0
+                min_hand_scale: 20.0,
+                cross_axis_coupling_ratio: 0.0
             },
             ramping: {
                 accel_rate: 250.0,
@@ -362,7 +383,6 @@ export class GesturePipeline {
                 rawX = lm.x;
                 rawY = lm.y;
             }
-            // User space conversion: flip x' = 1 - x
             const userX = (1.0 - rawX) * width;
             const userY = rawY * height;
             pts.push({ x: userX, y: userY });
@@ -378,21 +398,35 @@ export class GesturePipeline {
         const kx = kxSum / 4.0;
         const ky = kySum / 4.0;
 
-        // Hand axis vector from wrist to knuckle centroid
         const dx = kx - wrist.x;
         const dy = ky - wrist.y;
-        // In screen space y is downwards; straight up has dx=0, dy < 0 (-dy > 0)
         const rawTiltRad = Math.atan2(dx, -dy);
         let tiltDeg = rawTiltRad * (180.0 / Math.PI);
         tiltDeg = Math.max(-90.0, Math.min(90.0, tiltDeg));
 
-        // Scale: wrist to middle knuckle distance in pixel space
         const middleMcp = pts[LANDMARK_MIDDLE_MCP];
         const scaleRaw = Math.hypot(middleMcp.x - wrist.x, middleMcp.y - wrist.y);
         const minScale = Number(this.mapCfg.min_hand_scale !== undefined ? this.mapCfg.min_hand_scale : 20.0);
         const scale = Math.max(minScale, scaleRaw);
 
-        return [kx, ky, tiltDeg, scale];
+        // Geometric finger extension ratio
+        const fingerPairs = [
+            [LANDMARK_INDEX_TIP, LANDMARK_INDEX_MCP],
+            [LANDMARK_MIDDLE_TIP, LANDMARK_MIDDLE_MCP],
+            [LANDMARK_RING_TIP, LANDMARK_RING_MCP],
+            [LANDMARK_PINKY_TIP, LANDMARK_PINKY_MCP]
+        ];
+        let extSum = 0.0;
+        for (const [tipIdx, mcpIdx] of fingerPairs) {
+            const tipPt = pts[tipIdx];
+            const mcpPt = pts[mcpIdx];
+            const dTip = Math.hypot(tipPt.x - wrist.x, tipPt.y - wrist.y);
+            const dMcp = Math.hypot(mcpPt.x - wrist.x, mcpPt.y - wrist.y);
+            extSum += dTip / Math.max(1.0, dMcp);
+        }
+        const fingerExtension = extSum / 4.0;
+
+        return [kx, ky, tiltDeg, scale, fingerExtension];
     }
 
     step(frame, tMs) {
@@ -403,8 +437,11 @@ export class GesturePipeline {
         const width = Number(frame.width || 640.0);
         const height = Number(frame.height || 480.0);
 
-        const enterConf = Number(this.smCfg.enter_conf !== undefined ? this.smCfg.enter_conf : 0.7);
-        const exitConf = Number(this.smCfg.exit_conf !== undefined ? this.smCfg.exit_conf : 0.4);
+        const enterConf = Number(this.smCfg.enter_conf !== undefined ? this.smCfg.enter_conf : 0.65);
+        const exitConf = Number(this.smCfg.exit_conf !== undefined ? this.smCfg.exit_conf : 0.35);
+        const openExtEnter = Number(this.smCfg.open_extension_enter !== undefined ? this.smCfg.open_extension_enter : 1.55);
+        const openExtExit = Number(this.smCfg.open_extension_exit !== undefined ? this.smCfg.open_extension_exit : 1.30);
+        const fistExt = Number(this.smCfg.fist_extension !== undefined ? this.smCfg.fist_extension : 1.15);
         const engageFrames = Number(this.smCfg.engage_frames !== undefined ? this.smCfg.engage_frames : 4);
         const graceMs = Number(this.smCfg.grace_ms !== undefined ? this.smCfg.grace_ms : 150);
         const estopFrames = Number(this.smCfg.estop_frames !== undefined ? this.smCfg.estop_frames : 2);
@@ -417,18 +454,21 @@ export class GesturePipeline {
         const hasLandmarks = landmarks && Array.isArray(landmarks) && landmarks.length >= 21;
 
         // 1. Feature extraction & One Euro filtering
-        let featX = 0.0, featY = 0.0, featTilt = 0.0, featScale = 20.0;
+        let featX = 0.0, featY = 0.0, featTilt = 0.0, featScale = 20.0, fingerExtension = 0.0;
         let smoothX = null, smoothY = null, smoothTilt = null, smoothScale = null;
         if (hasLandmarks) {
-            [featX, featY, featTilt, featScale] = this._extractFeatures(landmarks, width, height);
+            [featX, featY, featTilt, featScale, fingerExtension] = this._extractFeatures(landmarks, width, height);
             smoothX = this.filterX.filter(featX, tMs);
             smoothY = this.filterY.filter(featY, tMs);
             smoothTilt = this.filterTilt.filter(featTilt, tMs);
             smoothScale = this.filterScale.filter(featScale, tMs);
         }
 
-        // 2. Emergency Stop check (Closed_Fist)
-        const isFist = (gesture === 'Closed_Fist') && (confidence >= estopConf);
+        // 2. Emergency Stop check (Classifier Closed_Fist OR Geometric Fist)
+        const isFistClassifier = (gesture === 'Closed_Fist') && (confidence >= estopConf);
+        const isFistGeometric = hasLandmarks && (fingerExtension <= fistExt);
+        const isFist = isFistClassifier || isFistGeometric;
+
         if (isFist) {
             this.estopFramesCount++;
             if (this.estopFramesCount >= estopFrames) {
@@ -493,10 +533,16 @@ export class GesturePipeline {
             }
         }
 
-        // 4. State Machine Transitions
-        const isOpenPalm = (gesture === 'Open_Palm');
+        // 4. State Machine Transitions with Rotation-Invariant Hand Test
+        const canEngage = hasLandmarks && (gesture === 'Open_Palm') && (confidence >= enterConf) && (fingerExtension >= openExtEnter);
+        const canSustain = hasLandmarks && (
+            ((gesture === 'Open_Palm') && (confidence >= exitConf)) || (fingerExtension >= openExtExit)
+        ) && !isFist;
+
         let preRampLinear = 0;
         let preRampAngular = 0;
+        let linearStages = { raw: 0.0, norm: 0.0, after_deadzone: 0.0, after_expo: 0.0, target: 0 };
+        let angularStages = { raw: 0.0, norm: 0.0, after_deadzone: 0.0, after_expo: 0.0, target: 0 };
 
         if (this.state === 'ESTOP') {
             this.limiter.reset();
@@ -516,12 +562,15 @@ export class GesturePipeline {
                     smoothed_hand: smoothX !== null ? [smoothX, smoothY] : null,
                     smoothed_tilt: smoothTilt,
                     smoothed_scale: smoothScale,
+                    finger_extension: fingerExtension,
                     pre_ramp_linear: 0,
                     pre_ramp_angular: 0,
+                    linear_stages: { ...linearStages, ramped: 0 },
+                    angular_stages: { ...angularStages, ramped: 0 },
                     latched_mode: 'NORMAL',
                     control_mode: this.controlMode,
                     neutral_tilt: this.neutralTilt,
-                    neutral_y: this.anchorY
+                    neutral_y: (this.mapCfg.throttle_neutral || 'anchor') === 'anchor' ? this.anchorY : (0.5 * height)
                 }
             };
         }
@@ -536,7 +585,7 @@ export class GesturePipeline {
         }
 
         if (this.state === 'IDLE') {
-            if (hasLandmarks && isOpenPalm && confidence >= enterConf) {
+            if (canEngage) {
                 this.state = 'ENGAGING';
                 this.engageSamplesX = [smoothX];
                 this.engageSamplesY = [smoothY];
@@ -548,7 +597,7 @@ export class GesturePipeline {
             preRampLinear = 0;
             preRampAngular = 0;
         } else if (this.state === 'ENGAGING') {
-            if (hasLandmarks && isOpenPalm && confidence >= enterConf) {
+            if (canEngage) {
                 this.engageSamplesX.push(smoothX);
                 this.engageSamplesY.push(smoothY);
                 this.engageSamplesTilt.push(smoothTilt);
@@ -567,10 +616,10 @@ export class GesturePipeline {
             preRampLinear = 0;
             preRampAngular = 0;
         } else if (this.state === 'DRIVING') {
-            if (hasLandmarks && isOpenPalm && confidence >= exitConf) {
-                const cmd = this._computeMapping(smoothX, smoothY, smoothTilt, smoothScale, height);
-                preRampLinear = cmd[0];
-                preRampAngular = cmd[1];
+            if (canSustain) {
+                [preRampLinear, preRampAngular, linearStages, angularStages] = this._computeMappingTraced(
+                    smoothX, smoothY, smoothTilt, smoothScale, height
+                );
                 this.lastHeldLinear = preRampLinear;
                 this.lastHeldAngular = preRampAngular;
             } else {
@@ -580,11 +629,11 @@ export class GesturePipeline {
                 preRampAngular = this.lastHeldAngular;
             }
         } else if (this.state === 'GRACE') {
-            if (hasLandmarks && isOpenPalm && confidence >= exitConf) {
+            if (canSustain) {
                 this.state = 'DRIVING';
-                const cmd = this._computeMapping(smoothX, smoothY, smoothTilt, smoothScale, height);
-                preRampLinear = cmd[0];
-                preRampAngular = cmd[1];
+                [preRampLinear, preRampAngular, linearStages, angularStages] = this._computeMappingTraced(
+                    smoothX, smoothY, smoothTilt, smoothScale, height
+                );
                 this.lastHeldLinear = preRampLinear;
                 this.lastHeldAngular = preRampAngular;
             } else if ((tMs - this.graceStartTMs) < graceMs) {
@@ -622,6 +671,9 @@ export class GesturePipeline {
 
         const latchedLabel = this.turboLatched ? 'TURBO' : (this.precisionLatched ? 'PRECISION' : 'NORMAL');
 
+        linearStages.ramped = outLinear;
+        angularStages.ramped = outAngular;
+
         return {
             linear: outLinear,
             angular: outAngular,
@@ -632,12 +684,15 @@ export class GesturePipeline {
                 smoothed_hand: smoothX !== null ? [smoothX, smoothY] : null,
                 smoothed_tilt: smoothTilt,
                 smoothed_scale: smoothScale,
+                finger_extension: fingerExtension,
                 pre_ramp_linear: preRampLinear,
                 pre_ramp_angular: preRampAngular,
+                linear_stages: linearStages,
+                angular_stages: angularStages,
                 latched_mode: latchedLabel,
                 control_mode: this.controlMode,
                 neutral_tilt: this.neutralTilt,
-                neutral_y: this.anchorY
+                neutral_y: (this.mapCfg.throttle_neutral || 'anchor') === 'anchor' ? this.anchorY : (0.5 * height)
             }
         };
     }
@@ -657,10 +712,14 @@ export class GesturePipeline {
         this.engageSamplesTilt = [];
     }
 
-    _computeMapping(handX, handY, tiltDeg, handScale, frameHeight) {
+    _computeMappingTraced(handX, handY, tiltDeg, handScale, frameHeight) {
         const expo = Number(this.mapCfg.expo !== undefined ? this.mapCfg.expo : 0.4);
         const minScale = Number(this.mapCfg.min_hand_scale !== undefined ? this.mapCfg.min_hand_scale : 20.0);
         const scale = Math.max(minScale, handScale);
+        const reverseScale = Number(this.mapCfg.reverse_scale !== undefined ? this.mapCfg.reverse_scale : 0.60);
+
+        let linear = 0, angular = 0;
+        let linStages = {}, angStages = {};
 
         if (this.controlMode === 'joystick') {
             const fullScale = Number(this.mapCfg.joystick_full_scale !== undefined ? this.mapCfg.joystick_full_scale : 1.2);
@@ -672,24 +731,49 @@ export class GesturePipeline {
             const dispX = (handX - ancX) / scale;
             const dispY = (ancY - handY) / scale;
 
-            const angular = applyAxisShaping(dispX, fullScale, deadzone, this.sensitivity, expo);
-            const linear = applyAxisShaping(dispY, fullScale, deadzone, this.sensitivity, expo);
-            return [linear, angular];
+            [angular, angStages] = applyAxisShapingTraced(dispX, fullScale, deadzone, this.sensitivity, expo);
+            [linear, linStages] = applyAxisShapingTraced(dispY, fullScale, deadzone, this.sensitivity, expo, reverseScale);
         } else {
             const tiltFs = Number(this.mapCfg.classic_tilt_full_scale !== undefined ? this.mapCfg.classic_tilt_full_scale : 40.0);
             const tiltDz = Number(this.mapCfg.classic_tilt_deadzone !== undefined ? this.mapCfg.classic_tilt_deadzone : 0.10);
             const effTilt = tiltDeg - this.neutralTilt;
-            const angular = applyAxisShaping(effTilt, tiltFs, tiltDz, this.sensitivity, expo);
+            [angular, angStages] = applyAxisShapingTraced(effTilt, tiltFs, tiltDz, this.sensitivity, expo);
 
             const throttleMode = this.mapCfg.throttle_neutral || 'anchor';
             const neutralY = (throttleMode === 'anchor' && this.anchorY !== null) ? this.anchorY : 0.5 * frameHeight;
 
             const dispY = (neutralY - handY) / scale;
-            const throttleFs = Number(this.mapCfg.classic_throttle_full_scale !== undefined ? this.mapCfg.classic_throttle_full_scale : 1.0);
+            const throttleFs = Number(this.mapCfg.classic_throttle_full_scale !== undefined ? this.mapCfg.classic_throttle_full_scale : 1.2);
             const throttleDz = Number(this.mapCfg.classic_throttle_deadzone !== undefined ? this.mapCfg.classic_throttle_deadzone : 0.15);
 
-            const linear = applyAxisShaping(dispY, throttleFs, throttleDz, this.sensitivity, expo);
-            return [linear, angular];
+            [linear, linStages] = applyAxisShapingTraced(dispY, throttleFs, throttleDz, this.sensitivity, expo, reverseScale);
         }
+
+        // Cross-Axis Coupling Suppression (mild attenuation of non-dominant axis when enabled)
+        const couplingRatio = Number(this.mapCfg.cross_axis_coupling_ratio !== undefined ? this.mapCfg.cross_axis_coupling_ratio : 0.0);
+        if (couplingRatio > 0.0 && (Math.abs(linear) > 0 || Math.abs(angular) > 0)) {
+            const absLin = Math.abs(linear);
+            const absAng = Math.abs(angular);
+            if (absLin > absAng * couplingRatio) {
+                const currentR = absLin / Math.max(1.0, absAng);
+                const factor = Math.max(0.0, Math.min(1.0, 2.0 - (currentR / couplingRatio)));
+                angular = Math.round(angular * factor);
+                angStages.target = angular;
+                angStages.after_expo = (angStages.after_expo || 0.0) * factor;
+            } else if (absAng > absLin * couplingRatio) {
+                const currentR = absAng / Math.max(1.0, absLin);
+                const factor = Math.max(0.0, Math.min(1.0, 2.0 - (currentR / couplingRatio)));
+                linear = Math.round(linear * factor);
+                linStages.target = linear;
+                linStages.after_expo = (linStages.after_expo || 0.0) * factor;
+            }
+        }
+
+        return [linear, angular, linStages, angStages];
+    }
+
+    _computeMapping(handX, handY, tiltDeg, handScale, frameHeight) {
+        const [lin, ang] = this._computeMappingTraced(handX, handY, tiltDeg, handScale, frameHeight);
+        return [lin, ang];
     }
 }

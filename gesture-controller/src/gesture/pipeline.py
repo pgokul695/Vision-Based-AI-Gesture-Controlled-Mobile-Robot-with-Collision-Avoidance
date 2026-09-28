@@ -19,9 +19,13 @@ FLAG_PRECISION: int = 1 << 4       # Bit 4: Precision speed mode (0x10)
 
 LANDMARK_WRIST: int = 0
 LANDMARK_INDEX_MCP: int = 5
+LANDMARK_INDEX_TIP: int = 8
 LANDMARK_MIDDLE_MCP: int = 9
+LANDMARK_MIDDLE_TIP: int = 12
 LANDMARK_RING_MCP: int = 13
+LANDMARK_RING_TIP: int = 16
 LANDMARK_PINKY_MCP: int = 17
+LANDMARK_PINKY_TIP: int = 20
 
 
 class OneEuroFilter:
@@ -161,21 +165,17 @@ class SlewLimiter:
         return lin_int, ang_int
 
 
-def apply_axis_shaping(
+def apply_axis_shaping_traced(
     val: float,
     full_scale: float,
     deadzone: float,
     sensitivity: float,
     expo: float,
-) -> int:
-    """Shared axis shaping per Task 4:
-    1. Normalize using full_scale range and sensitivity multiplier.
-    2. Deadzone with rescale: subtract deadzone and rescale remainder to [0, 1].
-    3. Expo curve: y = sign(x) * (expo*|x|^3 + (1-expo)*|x|).
-    4. Clamp to +-100.
-    """
+    reverse_scale: float = 1.0,
+) -> Tuple[int, Dict[str, float]]:
+    """Shared axis shaping with per-stage trace telemetry."""
     if full_scale <= 0.0:
-        return 0
+        return 0, {"raw": val, "norm": 0.0, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0}
 
     # 1. Normalize
     norm = (val / full_scale) * sensitivity
@@ -183,21 +183,39 @@ def apply_axis_shaping(
     mag = abs(norm)
 
     # 2. Deadzone with rescale
-    if mag <= deadzone:
-        return 0
-    if deadzone >= 1.0:
-        return 0
+    if mag <= deadzone or deadzone >= 1.0:
+        return 0, {"raw": val, "norm": norm, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0}
 
-    rescaled = (mag - deadzone) / (1.0 - deadzone)
-    if rescaled > 1.0:
-        rescaled = 1.0
+    rescaled = min(1.0, (mag - deadzone) / (1.0 - deadzone))
+    signed_rescaled = sign * rescaled
 
     # 3. Expo curve
     y = sign * (expo * (rescaled ** 3) + (1.0 - expo) * rescaled)
 
-    # 4. Scale to +-100 and clamp
-    out = int(round(y * 100.0))
-    return max(-100, min(100, out))
+    # 4. Scale to +-100 and apply reverse_scale if negative, then clamp
+    effective_scale = reverse_scale if sign < 0.0 else 1.0
+    scaled_y = y * effective_scale
+    target = int(max(-100, min(100, round(scaled_y * 100.0))))
+    stages = {
+        "raw": val,
+        "norm": norm,
+        "after_deadzone": signed_rescaled,
+        "after_expo": scaled_y,
+        "target": target,
+    }
+    return target, stages
+
+
+def apply_axis_shaping(
+    val: float,
+    full_scale: float,
+    deadzone: float,
+    sensitivity: float,
+    expo: float,
+    reverse_scale: float = 1.0,
+) -> int:
+    target, _ = apply_axis_shaping_traced(val, full_scale, deadzone, sensitivity, expo, reverse_scale)
+    return target
 
 
 class GesturePipeline:
@@ -225,7 +243,6 @@ class GesturePipeline:
         self.filter_x = OneEuroFilter(**preset_cfg)
         self.filter_y = OneEuroFilter(**preset_cfg)
         self.filter_tilt = OneEuroFilter(**preset_cfg)
-        # Scale uses slower smoothing
         scale_preset = {"min_cutoff": 0.5, "beta": 0.002, "d_cutoff": 1.0}
         self.filter_scale = OneEuroFilter(**scale_preset)
 
@@ -279,7 +296,6 @@ class GesturePipeline:
                     return json.loads(p.read_text(encoding="utf-8"))
                 except Exception:
                     pass
-        # Fallback inline defaults
         return {
             "control_mode": "classic",
             "mirror_preview": True,
@@ -291,8 +307,11 @@ class GesturePipeline:
                 "high": {"min_cutoff": 0.5, "beta": 0.005, "d_cutoff": 1.0},
             },
             "state_machine": {
-                "enter_conf": 0.7,
-                "exit_conf": 0.4,
+                "enter_conf": 0.65,
+                "exit_conf": 0.35,
+                "open_extension_enter": 1.55,
+                "open_extension_exit": 1.30,
+                "fist_extension": 1.15,
                 "engage_frames": 4,
                 "grace_ms": 150,
                 "estop_frames": 2,
@@ -307,12 +326,14 @@ class GesturePipeline:
                 "throttle_neutral": "anchor",
                 "classic_tilt_full_scale": 40.0,
                 "classic_tilt_deadzone": 0.10,
-                "classic_throttle_full_scale": 1.0,
+                "classic_throttle_full_scale": 1.2,
                 "classic_throttle_deadzone": 0.15,
+                "reverse_scale": 0.60,
                 "joystick_full_scale": 1.2,
                 "joystick_deadzone": 0.15,
                 "expo": 0.4,
                 "min_hand_scale": 20.0,
+                "cross_axis_coupling_ratio": 0.0,
             },
             "ramping": {
                 "accel_rate": 250.0,
@@ -374,9 +395,8 @@ class GesturePipeline:
 
     def _extract_features(
         self, landmarks: List[Any], width: float, height: float
-    ) -> Tuple[float, float, float, float]:
+    ) -> Tuple[float, float, float, float, float]:
         """Convert normalized landmarks to user-space pixel coordinates and compute features."""
-        # 1. User space conversion (flip x' = 1 - x) and aspect-ratio pixel scaling
         pts: List[Tuple[float, float]] = []
         for lm in landmarks:
             if isinstance(lm, (tuple, list)):
@@ -399,11 +419,8 @@ class GesturePipeline:
         # Hand axis from wrist to knuckle centroid
         dx = kx - wrist[0]
         dy = ky - wrist[1]  # In screen space, y is positive downwards
-        # Vector pointing straight up has dx=0, dy < 0 (-dy > 0)
-        # atan2(dx, -dy) yields 0 when vertical up, >0 tilted right, <0 tilted left
         raw_tilt_rad = math.atan2(dx, -dy)
         tilt_deg = math.degrees(raw_tilt_rad)
-        # Clamp to [-90, 90]
         tilt_deg = max(-90.0, min(90.0, tilt_deg))
 
         # Hand scale: wrist to middle knuckle distance in pixel space
@@ -412,7 +429,23 @@ class GesturePipeline:
         min_scale = float(self.map_cfg.get("min_hand_scale", 20.0))
         scale = max(min_scale, scale_raw)
 
-        return kx, ky, tilt_deg, scale
+        # Geometric finger extension ratio
+        finger_pairs = [
+            (LANDMARK_INDEX_TIP, LANDMARK_INDEX_MCP),
+            (LANDMARK_MIDDLE_TIP, LANDMARK_MIDDLE_MCP),
+            (LANDMARK_RING_TIP, LANDMARK_RING_MCP),
+            (LANDMARK_PINKY_TIP, LANDMARK_PINKY_MCP),
+        ]
+        ratios = []
+        for tip_idx, mcp_idx in finger_pairs:
+            tip_pt = pts[tip_idx]
+            mcp_pt = pts[mcp_idx]
+            d_tip = math.hypot(tip_pt[0] - wrist[0], tip_pt[1] - wrist[1])
+            d_mcp = math.hypot(mcp_pt[0] - wrist[0], mcp_pt[1] - wrist[1])
+            ratios.append(d_tip / max(1.0, d_mcp))
+        finger_extension = sum(ratios) / len(ratios)
+
+        return kx, ky, tilt_deg, scale, finger_extension
 
     def step(self, frame: Dict[str, Any], t_ms: float) -> Dict[str, Any]:
         """Process a frame at timestamp t_ms and return motion command + debug telemetry."""
@@ -424,8 +457,11 @@ class GesturePipeline:
         height = float(frame.get("height") or 480.0)
 
         # Thresholds
-        enter_conf = float(self.sm_cfg.get("enter_conf", 0.7))
-        exit_conf = float(self.sm_cfg.get("exit_conf", 0.4))
+        enter_conf = float(self.sm_cfg.get("enter_conf", 0.65))
+        exit_conf = float(self.sm_cfg.get("exit_conf", 0.35))
+        open_ext_enter = float(self.sm_cfg.get("open_extension_enter", 1.55))
+        open_ext_exit = float(self.sm_cfg.get("open_extension_exit", 1.30))
+        fist_ext = float(self.sm_cfg.get("fist_extension", 1.15))
         engage_frames = int(self.sm_cfg.get("engage_frames", 4))
         grace_ms = float(self.sm_cfg.get("grace_ms", 150))
         estop_frames = int(self.sm_cfg.get("estop_frames", 2))
@@ -438,17 +474,20 @@ class GesturePipeline:
         has_landmarks = landmarks is not None and len(landmarks) >= 21
 
         # 1. Feature extraction & One Euro filtering
-        feat_x, feat_y, feat_tilt, feat_scale = 0.0, 0.0, 0.0, 20.0
+        feat_x, feat_y, feat_tilt, feat_scale, finger_extension = 0.0, 0.0, 0.0, 20.0, 0.0
         smooth_x, smooth_y, smooth_tilt, smooth_scale = None, None, None, None
         if has_landmarks:
-            feat_x, feat_y, feat_tilt, feat_scale = self._extract_features(landmarks, width, height)
+            feat_x, feat_y, feat_tilt, feat_scale, finger_extension = self._extract_features(landmarks, width, height)
             smooth_x = self.filter_x.filter(feat_x, t_ms)
             smooth_y = self.filter_y.filter(feat_y, t_ms)
             smooth_tilt = self.filter_tilt.filter(feat_tilt, t_ms)
             smooth_scale = self.filter_scale.filter(feat_scale, t_ms)
 
-        # 2. Check Emergency Stop (Closed_Fist)
-        is_fist = (gesture == "Closed_Fist") and (confidence >= estop_conf)
+        # 2. Check Emergency Stop (Classifier Closed_Fist OR Geometric Fist)
+        is_fist_classifier = (gesture == "Closed_Fist") and (confidence >= estop_conf)
+        is_fist_geometric = has_landmarks and (finger_extension <= fist_ext)
+        is_fist = is_fist_classifier or is_fist_geometric
+
         if is_fist:
             self.estop_frames_count += 1
             if self.estop_frames_count >= estop_frames:
@@ -456,7 +495,6 @@ class GesturePipeline:
         else:
             self.estop_frames_count = 0
             if self.state == "ESTOP":
-                # Fist released -> return to IDLE, fresh engage required
                 self.state = "IDLE"
 
         # 3. Handle Mode Latches & Fun Trick (only active when not in ESTOP)
@@ -501,13 +539,21 @@ class GesturePipeline:
                 self.trick_held_start_ms = None
                 self.trick_fired_for_this_hold = False
 
-        # 4. State Machine Transitions
-        is_open_palm = (gesture == "Open_Palm")
+        # 4. State Machine Transitions with Rotation-Invariant Hand Test
+        # Engage requires Open_Palm classifier AND geometric open test
+        can_engage = has_landmarks and (gesture == "Open_Palm") and (confidence >= enter_conf) and (finger_extension >= open_ext_enter)
+
+        # Sustain driving is rotation-robust: requires Open_Palm OR geometric open test
+        can_sustain = has_landmarks and (
+            ((gesture == "Open_Palm") and (confidence >= exit_conf)) or (finger_extension >= open_ext_exit)
+        ) and not is_fist
+
         pre_ramp_linear = 0
         pre_ramp_angular = 0
+        linear_stages = {"raw": 0.0, "norm": 0.0, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0}
+        angular_stages = {"raw": 0.0, "norm": 0.0, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0}
 
         if self.state == "ESTOP":
-            # Instant zero output, bypasses ramping and smoothing
             self.limiter.reset()
             self.clear_latches()
             self.anchor_x = None
@@ -526,12 +572,15 @@ class GesturePipeline:
                     "smoothed_hand": [smooth_x, smooth_y] if smooth_x is not None else None,
                     "smoothed_tilt": smooth_tilt,
                     "smoothed_scale": smooth_scale,
+                    "finger_extension": finger_extension,
                     "pre_ramp_linear": 0,
                     "pre_ramp_angular": 0,
+                    "linear_stages": {**linear_stages, "ramped": 0},
+                    "angular_stages": {**angular_stages, "ramped": 0},
                     "latched_mode": "NORMAL",
                     "control_mode": self.control_mode,
                     "neutral_tilt": self.neutral_tilt,
-                    "neutral_y": self.anchor_y,
+                    "neutral_y": self.anchor_y if (self.map_cfg.get("throttle_neutral", "anchor") == "anchor") else (0.5 * height),
                 },
             }
 
@@ -543,7 +592,7 @@ class GesturePipeline:
                 self.clear_latches()
 
         if self.state == "IDLE":
-            if has_landmarks and is_open_palm and confidence >= enter_conf:
+            if can_engage:
                 self.state = "ENGAGING"
                 self.engage_samples_x = [smooth_x]
                 self.engage_samples_y = [smooth_y]
@@ -554,7 +603,7 @@ class GesturePipeline:
             pre_ramp_angular = 0
 
         elif self.state == "ENGAGING":
-            if has_landmarks and is_open_palm and confidence >= enter_conf:
+            if can_engage:
                 self.engage_samples_x.append(smooth_x)
                 self.engage_samples_y.append(smooth_y)
                 self.engage_samples_tilt.append(smooth_tilt)
@@ -564,7 +613,6 @@ class GesturePipeline:
                     avg_tilt = sum(self.engage_samples_tilt) / len(self.engage_samples_tilt)
                     self._enter_driving(avg_x, avg_y, avg_tilt)
             else:
-                # Interrupted engage -> back to IDLE
                 self.state = "IDLE"
                 self.engage_samples_x.clear()
                 self.engage_samples_y.clear()
@@ -573,35 +621,30 @@ class GesturePipeline:
             pre_ramp_angular = 0
 
         elif self.state == "DRIVING":
-            if has_landmarks and is_open_palm and confidence >= exit_conf:
-                # Compute continuous driving command
-                pre_ramp_linear, pre_ramp_angular = self._compute_mapping(
+            if can_sustain:
+                pre_ramp_linear, pre_ramp_angular, linear_stages, angular_stages = self._compute_mapping_traced(
                     smooth_x, smooth_y, smooth_tilt, smooth_scale, height
                 )
                 self.last_held_linear = pre_ramp_linear
                 self.last_held_angular = pre_ramp_angular
             else:
-                # Dropout detected -> enter GRACE
                 self.state = "GRACE"
                 self.grace_start_t_ms = t_ms
                 pre_ramp_linear = self.last_held_linear
                 pre_ramp_angular = self.last_held_angular
 
         elif self.state == "GRACE":
-            if has_landmarks and is_open_palm and confidence >= exit_conf:
-                # Recovered before timeout! Return to DRIVING
+            if can_sustain:
                 self.state = "DRIVING"
-                pre_ramp_linear, pre_ramp_angular = self._compute_mapping(
+                pre_ramp_linear, pre_ramp_angular, linear_stages, angular_stages = self._compute_mapping_traced(
                     smooth_x, smooth_y, smooth_tilt, smooth_scale, height
                 )
                 self.last_held_linear = pre_ramp_linear
                 self.last_held_angular = pre_ramp_angular
             elif (t_ms - self.grace_start_t_ms) < grace_ms:
-                # Hold output target during grace window
                 pre_ramp_linear = self.last_held_linear
                 pre_ramp_angular = self.last_held_angular
             else:
-                # Grace expired -> transition to IDLE, ramp target to 0
                 self.state = "IDLE"
                 self.anchor_x = None
                 self.anchor_y = None
@@ -615,9 +658,7 @@ class GesturePipeline:
 
         # 6. Flag Assembly
         flags = 0
-        if self.state in ("IDLE", "ENGAGING"):
-            flags |= FLAG_LOW_CONFIDENCE
-        elif self.state == "GRACE":
+        if self.state in ("IDLE", "ENGAGING", "GRACE"):
             flags |= FLAG_LOW_CONFIDENCE
 
         if self.turbo_latched:
@@ -630,6 +671,9 @@ class GesturePipeline:
 
         latched_label = "TURBO" if self.turbo_latched else ("PRECISION" if self.precision_latched else "NORMAL")
 
+        linear_stages["ramped"] = out_linear
+        angular_stages["ramped"] = out_angular
+
         return {
             "linear": out_linear,
             "angular": out_angular,
@@ -640,12 +684,15 @@ class GesturePipeline:
                 "smoothed_hand": [smooth_x, smooth_y] if smooth_x is not None else None,
                 "smoothed_tilt": smooth_tilt,
                 "smoothed_scale": smooth_scale,
+                "finger_extension": finger_extension,
                 "pre_ramp_linear": pre_ramp_linear,
                 "pre_ramp_angular": pre_ramp_angular,
+                "linear_stages": linear_stages,
+                "angular_stages": angular_stages,
                 "latched_mode": latched_label,
                 "control_mode": self.control_mode,
                 "neutral_tilt": self.neutral_tilt,
-                "neutral_y": self.anchor_y,
+                "neutral_y": self.anchor_y if (self.map_cfg.get("throttle_neutral", "anchor") == "anchor") else (0.5 * height),
             },
         }
 
@@ -661,40 +708,38 @@ class GesturePipeline:
         self.engage_samples_y.clear()
         self.engage_samples_tilt.clear()
 
-    def _compute_mapping(
+    def _compute_mapping_traced(
         self,
         hand_x: float,
         hand_y: float,
         tilt_deg: float,
         hand_scale: float,
         frame_height: float,
-    ) -> Tuple[int, int]:
+    ) -> Tuple[int, int, Dict[str, float], Dict[str, float]]:
         expo = float(self.map_cfg.get("expo", 0.4))
         scale = max(float(self.map_cfg.get("min_hand_scale", 20.0)), hand_scale)
+        reverse_scale = float(self.map_cfg.get("reverse_scale", 0.60))
 
         if self.control_mode == "joystick":
-            # Joystick Mode
             full_scale = float(self.map_cfg.get("joystick_full_scale", 1.2))
             deadzone = float(self.map_cfg.get("joystick_deadzone", 0.15))
 
             anc_x = self.anchor_x if self.anchor_x is not None else hand_x
             anc_y = self.anchor_y if self.anchor_y is not None else hand_y
 
-            # Deflection normalized by hand scale
             disp_x = (hand_x - anc_x) / scale
-            # In screen coords y is positive downwards; up = forward = positive deflection
             disp_y = (anc_y - hand_y) / scale
 
-            angular = apply_axis_shaping(disp_x, full_scale, deadzone, self.sensitivity, expo)
-            linear = apply_axis_shaping(disp_y, full_scale, deadzone, self.sensitivity, expo)
-            return linear, angular
+            angular, ang_stages = apply_axis_shaping_traced(disp_x, full_scale, deadzone, self.sensitivity, expo)
+            linear, lin_stages = apply_axis_shaping_traced(disp_y, full_scale, deadzone, self.sensitivity, expo, reverse_scale)
+            return linear, angular, lin_stages, ang_stages
 
         else:
-            # Classic Mode (Improved)
+            # Classic Mode (Anchor-based throttle & tilt steering)
             tilt_fs = float(self.map_cfg.get("classic_tilt_full_scale", 40.0))
             tilt_dz = float(self.map_cfg.get("classic_tilt_deadzone", 0.10))
             eff_tilt = tilt_deg - self.neutral_tilt
-            angular = apply_axis_shaping(eff_tilt, tilt_fs, tilt_dz, self.sensitivity, expo)
+            angular, ang_stages = apply_axis_shaping_traced(eff_tilt, tilt_fs, tilt_dz, self.sensitivity, expo)
 
             throttle_neutral_mode = self.map_cfg.get("throttle_neutral", "anchor")
             if throttle_neutral_mode == "anchor" and self.anchor_y is not None:
@@ -703,8 +748,38 @@ class GesturePipeline:
                 neutral_y = 0.5 * frame_height
 
             disp_y = (neutral_y - hand_y) / scale
-            throttle_fs = float(self.map_cfg.get("classic_throttle_full_scale", 1.0))
+            throttle_fs = float(self.map_cfg.get("classic_throttle_full_scale", 1.2))
             throttle_dz = float(self.map_cfg.get("classic_throttle_deadzone", 0.15))
 
-            linear = apply_axis_shaping(disp_y, throttle_fs, throttle_dz, self.sensitivity, expo)
-            return linear, angular
+            linear, lin_stages = apply_axis_shaping_traced(disp_y, throttle_fs, throttle_dz, self.sensitivity, expo, reverse_scale)
+
+        # Cross-Axis Coupling Suppression (mild attenuation of non-dominant axis when enabled)
+        coupling_ratio = float(self.map_cfg.get("cross_axis_coupling_ratio", 0.0))
+        if coupling_ratio > 0.0 and (abs(linear) > 0 or abs(angular) > 0):
+            abs_lin = abs(linear)
+            abs_ang = abs(angular)
+            if abs_lin > abs_ang * coupling_ratio:
+                current_r = abs_lin / max(1.0, float(abs_ang))
+                factor = max(0.0, min(1.0, 2.0 - (current_r / coupling_ratio)))
+                angular = int(round(angular * factor))
+                ang_stages["target"] = angular
+                ang_stages["after_expo"] = ang_stages.get("after_expo", 0.0) * factor
+            elif abs_ang > abs_lin * coupling_ratio:
+                current_r = abs_ang / max(1.0, float(abs_lin))
+                factor = max(0.0, min(1.0, 2.0 - (current_r / coupling_ratio)))
+                linear = int(round(linear * factor))
+                lin_stages["target"] = linear
+                lin_stages["after_expo"] = lin_stages.get("after_expo", 0.0) * factor
+
+        return linear, angular, lin_stages, ang_stages
+
+    def _compute_mapping(
+        self,
+        hand_x: float,
+        hand_y: float,
+        tilt_deg: float,
+        hand_scale: float,
+        frame_height: float,
+    ) -> Tuple[int, int]:
+        lin, ang, _, _ = self._compute_mapping_traced(hand_x, hand_y, tilt_deg, hand_scale, frame_height)
+        return lin, ang

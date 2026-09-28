@@ -46,12 +46,34 @@ def test_angle_computation_aspect_invariance():
 
     for w, h in [(1920.0, 1080.0), (1280.0, 720.0), (640.0, 480.0), (480.0, 640.0), (360.0, 640.0)]:
         frame = make_hand(cx=0.5, cy=0.5, scale=100.0, tilt_deg=tilt_target, width=w, height=h)
-        kx, ky, tilt_deg, scale = pipeline._extract_features(frame["landmarks"], w, h)
+        kx, ky, tilt_deg, scale, finger_ext = pipeline._extract_features(frame["landmarks"], w, h)
         assert abs(tilt_deg - tilt_target) < 0.1, f"Failed on resolution {w}x{h}: got {tilt_deg}"
+        assert finger_ext > 1.55
+
+
+def test_rotation_invariant_sustain():
+    """Verify hand tilted 35 deg sustains DRIVING even when classifier label drops to None."""
+    p = GesturePipeline()
+    t_ms = 100
+
+    # Engage with Open_Palm
+    for _ in range(4):
+        t_ms += 50
+        res = p.step(make_hand(cx=0.5, cy=0.5, gesture="Open_Palm", confidence=0.8), t_ms)
+
+    assert res["debug"]["state"] == "DRIVING"
+
+    # Tilt 35 deg with gesture classifier dropped out (gesture=None, conf=0.1)
+    # Geometric finger extension keeps it in DRIVING!
+    for _ in range(10):
+        t_ms += 50
+        res = p.step(make_hand(cx=0.5, cy=0.5, tilt_deg=35.0, gesture=None, confidence=0.1, curled=False), t_ms)
+        assert res["debug"]["state"] == "DRIVING"
+    assert res["angular"] > 50  # Steering active!
 
 
 def test_state_machine_hysteresis_and_grace():
-    """Verify enter_conf (0.7), exit_conf (0.4), engage_frames (4), and grace_ms (150)."""
+    """Verify enter_conf, exit_conf, engage_frames, and grace_ms."""
     p = GesturePipeline()
     t_ms = 100
 
@@ -67,14 +89,14 @@ def test_state_machine_hysteresis_and_grace():
     res = p.step(make_hand(gesture="Open_Palm", confidence=0.75), t_ms)
     assert res["debug"]["state"] == "DRIVING"
 
-    # Drops to conf=0.5 (above exit_conf 0.4): stays in DRIVING
+    # Drops to conf=0.45 (above exit_conf 0.35): stays in DRIVING
     t_ms += 50
-    res = p.step(make_hand(gesture="Open_Palm", confidence=0.5), t_ms)
+    res = p.step(make_hand(gesture="Open_Palm", confidence=0.45), t_ms)
     assert res["debug"]["state"] == "DRIVING"
 
-    # Drops below exit_conf (conf=0.3): enters GRACE
+    # Hand dropout (landmarks=None): enters GRACE
     t_ms += 50
-    res = p.step(make_hand(gesture="Open_Palm", confidence=0.3), t_ms)
+    res = p.step({"landmarks": None, "gesture": None, "confidence": 0.0, "width": 640.0, "height": 480.0}, t_ms)
     assert res["debug"]["state"] == "GRACE"
 
     # Recover within grace window: back to DRIVING
@@ -162,6 +184,62 @@ def test_axis_shaping():
     val_over = apply_axis_shaping(1.5, full_scale=1.0, deadzone=0.10, sensitivity=1.0, expo=0.4)
     assert val_over == 100
 
-    # Symmetry for negative
+    # Symmetry for negative (reverse_scale = 1.0)
     val_neg = apply_axis_shaping(-1.0, full_scale=1.0, deadzone=0.10, sensitivity=1.0, expo=0.4)
     assert val_neg == -100
+
+    # Reverse scale limits negative output to 60%
+    val_rev_scale = apply_axis_shaping(-1.0, full_scale=1.0, deadzone=0.10, sensitivity=1.0, expo=0.4, reverse_scale=0.60)
+    assert val_rev_scale == -60
+    # Over full scale clamped at -60
+    val_rev_over = apply_axis_shaping(-2.0, full_scale=1.0, deadzone=0.10, sensitivity=1.0, expo=0.4, reverse_scale=0.60)
+    assert val_rev_over == -60
+
+
+def test_cross_axis_coupling_suppression():
+    """Verify cross-axis coupling smoothly attenuates non-dominant axis when ratio > 0."""
+    p = GesturePipeline()
+    p.map_cfg["cross_axis_coupling_ratio"] = 2.0
+    p.map_cfg["tilt_neutral"] = "fixed"
+
+    # Linear dominates (linear = 100, angular small): angular should be attenuated
+    lin, ang, lin_stages, ang_stages = p._compute_mapping_traced(
+        hand_x=320.0, hand_y=140.0, tilt_deg=6.0, hand_scale=80.0, frame_height=480.0
+    )
+    assert abs(lin) == 100
+    assert ang == 0  # Angular attenuated to 0 because linear is > 4x angular
+
+    # When ratio is 0.0 (disabled), no attenuation occurs
+    p.map_cfg["cross_axis_coupling_ratio"] = 0.0
+    lin2, ang2, _, _ = p._compute_mapping_traced(
+        hand_x=320.0, hand_y=140.0, tilt_deg=6.0, hand_scale=80.0, frame_height=480.0
+    )
+    assert abs(lin2) == 100
+    assert ang2 != 0
+
+
+def test_classifier_dropout_during_tilt_stays_driving():
+    """Verify that a 3-frame classifier dropout during tilt stays in DRIVING and maintains steering."""
+    p = GesturePipeline()
+    p.map_cfg["tilt_neutral"] = "fixed"
+    t_ms = 100
+
+    # Engage
+    for _ in range(4):
+        t_ms += 50
+        p.step(make_hand(cx=0.5, cy=0.5, gesture="Open_Palm", confidence=0.8), t_ms)
+    assert p.state == "DRIVING"
+
+    # Tilt +30 deg with Open_Palm
+    for _ in range(3):
+        t_ms += 50
+        res = p.step(make_hand(cx=0.5, cy=0.5, tilt_deg=30.0, gesture="Open_Palm", confidence=0.8), t_ms)
+        assert res["debug"]["state"] == "DRIVING"
+
+    # Dropout: classifier returns None and 0.1 conf for 3 frames
+    for _ in range(3):
+        t_ms += 50
+        res = p.step(make_hand(cx=0.5, cy=0.5, tilt_deg=30.0, gesture=None, confidence=0.1, curled=False), t_ms)
+        assert res["debug"]["state"] == "DRIVING", "Must not drop out of DRIVING during tilt"
+        assert res["angular"] > 40, "Steering must remain active during classifier dropout"
+

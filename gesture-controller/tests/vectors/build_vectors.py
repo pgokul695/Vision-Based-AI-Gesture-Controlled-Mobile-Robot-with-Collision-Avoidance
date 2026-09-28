@@ -36,20 +36,160 @@ def build_scenario_steady_tilt_aspects():
     ]
     for name, w, h in aspects:
         pipeline = GesturePipeline()
-        # Engage with fixed neutral tilt
         pipeline.map_cfg["tilt_neutral"] = "fixed"
         frames = []
         t_ms = 0
-        # 4 frames engage at 0 tilt
         for _ in range(4):
             t_ms += 50
             frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9, width=w, height=h), t_ms))
-        # 10 frames at +30 deg tilt
         for _ in range(10):
             t_ms += 50
             frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=30.0, gesture="Open_Palm", confidence=0.9, width=w, height=h), t_ms))
         scenarios.append((name, pipeline, frames))
     return scenarios
+
+
+def build_scenario_tilt_sustained_without_label():
+    """Scenario: Tilting hand to +35 deg and -35 deg causes classifier to drop to 'None' (0.2 conf),
+    but geometric finger extension sustains DRIVING and produces steering near full lock in both directions.
+    """
+    pipeline = GesturePipeline()
+    pipeline.map_cfg["tilt_neutral"] = "fixed"
+    frames = []
+    t_ms = 0
+    # Engage normally with Open_Palm
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Tilt to +35 deg while classifier drops label to None / low confidence
+    for _ in range(8):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=35.0, gesture=None, confidence=0.2, curled=False), t_ms))
+    # Return to level (0 deg)
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Tilt to -35 deg while classifier drops label to None / low confidence
+    for _ in range(8):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=-35.0, gesture=None, confidence=0.2, curled=False), t_ms))
+    # Return to level (0 deg)
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    return "tilt_35_sustained_geometric", pipeline, frames
+
+
+def build_scenario_classifier_dropout_during_tilt():
+    """Scenario: A 1-3 frame classifier dropout during steady tilt (+30 deg) does not leave DRIVING."""
+    pipeline = GesturePipeline()
+    pipeline.map_cfg["tilt_neutral"] = "fixed"
+    frames = []
+    t_ms = 0
+    # Engage
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Steady tilt +30 deg with Open_Palm
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=30.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # 3 frames of classifier dropout (gesture=None, confidence=0.1) while tilted
+    for _ in range(3):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=30.0, gesture=None, confidence=0.1, curled=False), t_ms))
+    # Classifier recovers
+    for _ in range(5):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=30.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    return "classifier_dropout_during_tilt", pipeline, frames
+
+
+def build_scenario_symmetric_monotonic_throttle():
+    """Scenario: Raising and lowering from anchor giving symmetric, monotonic throttle that reaches +-100 at full scale."""
+    pipeline = GesturePipeline()
+    pipeline.map_cfg["reverse_scale"] = 1.0  # Fully symmetric
+    frames = []
+    t_ms = 0
+    # Engage at cy=0.50, scale=80.0 (full scale 1.2 * 80 = 96px -> in 480h is 96/480 = 0.20 cy)
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.50, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Raise palm progressively: 0.50 -> 0.45 -> 0.40 -> 0.35 -> 0.30 (full scale -> +100)
+    for cy_step in [0.45, 0.40, 0.35, 0.30, 0.30, 0.30]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Return to anchor
+    for cy_step in [0.35, 0.40, 0.45, 0.50, 0.50]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Lower palm progressively: 0.50 -> 0.55 -> 0.60 -> 0.65 -> 0.70 (full scale -> -100)
+    for cy_step in [0.55, 0.60, 0.65, 0.70, 0.70, 0.70]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Return to anchor
+    for cy_step in [0.65, 0.60, 0.55, 0.50, 0.50]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    return "symmetric_monotonic_throttle", pipeline, frames
+
+
+def build_scenario_monotonic_anchor_throttle():
+    """Scenario: Raise palm above anchor for forward (+100 at full scale), lower below anchor for reduced reverse (-60 at full scale)."""
+    pipeline = GesturePipeline()
+    frames = []
+    t_ms = 0
+    # Engage with hand resting at cy=0.60 (natural resting position, anchor set here)
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.60, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Raise palm upward by full scale (96px -> cy = 0.60 - 96/480 = 0.40)
+    for cy_step in [0.55, 0.50, 0.45, 0.40, 0.40, 0.40]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Return to resting anchor
+    for cy_step in [0.45, 0.50, 0.55, 0.60, 0.60]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Lower palm below anchor by full scale (96px -> cy = 0.60 + 96/480 = 0.80) -> reverse limited to -60
+    for cy_step in [0.65, 0.70, 0.75, 0.80, 0.80, 0.80]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Return to resting anchor
+    for cy_step in [0.75, 0.70, 0.65, 0.60, 0.60]:
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=cy_step, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    return "monotonic_anchor_throttle", pipeline, frames
+
+
+def build_scenario_anchoring_position_invariance():
+    """Scenario: Anchoring at different positions (cy=0.7 vs cy=0.3) and hand sizes (scale=80 vs scale=120)
+    giving identical deflection outputs.
+    """
+    pipeline = GesturePipeline()
+    frames = []
+    t_ms = 0
+    # Phase 1: Hand at cy=0.70 (lower frame), scale=80.0
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.70, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Displace upward by 1.0 hand scale (80px in 480h -> 80/480)
+    for _ in range(6):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.70 - (80.0 / 480.0), scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Remove hand to return to IDLE
+    for _ in range(6):
+        t_ms += 50
+        frames.append(({"landmarks": None, "gesture": None, "confidence": 0.0, "width": 640.0, "height": 480.0}, t_ms))
+    # Phase 2: Hand at cy=0.30 (upper frame), scale=120.0
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.30, scale=120.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Displace upward by 1.0 hand scale (120px in 480h -> 120/480)
+    for _ in range(6):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.30 - (120.0 / 480.0), scale=120.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    return "anchoring_invariance", pipeline, frames
 
 
 def build_scenario_joystick():
@@ -82,19 +222,15 @@ def build_scenario_flicker():
     pipeline = GesturePipeline()
     frames = []
     t_ms = 0
-    # Engage
     for _ in range(4):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.3, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
-    # Drive for 3 frames
     for _ in range(3):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.3, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
-    # Dropout 2 frames (None / low confidence, 100ms total <= 150ms grace)
     for _ in range(2):
         t_ms += 50
         frames.append(({"landmarks": None, "gesture": None, "confidence": 0.0, "width": 640.0, "height": 480.0}, t_ms))
-    # Hand returns
     for _ in range(4):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.3, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
@@ -106,7 +242,6 @@ def build_scenario_estop():
     pipeline = GesturePipeline()
     frames = []
     t_ms = 0
-    # Engage and drive fast forward
     for _ in range(4):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.2, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
@@ -125,12 +260,28 @@ def build_scenario_estop():
     return "estop_instant", pipeline, frames
 
 
+def build_scenario_geometric_fist_estop():
+    """Scenario: Hand curls into fist without classifier label ('None') -> geometric estop fires within 2 frames."""
+    pipeline = GesturePipeline()
+    frames = []
+    t_ms = 0
+    for _ in range(4):
+        t_ms += 50
+        frames.append((make_hand(cx=0.5, cy=0.2, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
+    # Curled fist frame 1 with gesture=None
+    t_ms += 50
+    frames.append((make_hand(cx=0.5, cy=0.2, scale=80.0, tilt_deg=0.0, gesture=None, confidence=0.1, curled=True), t_ms))
+    # Curled fist frame 2 -> MUST BE ESTOP
+    t_ms += 50
+    frames.append((make_hand(cx=0.5, cy=0.2, scale=80.0, tilt_deg=0.0, gesture=None, confidence=0.1, curled=True), t_ms))
+    return "geometric_fist_estop", pipeline, frames
+
+
 def build_scenario_fun_trick():
     """Scenario 6: ILoveYou trick hold (500ms), single trigger, and cooldown enforcement."""
     pipeline = GesturePipeline()
     frames = []
     t_ms = 0
-    # Show ILoveYou for 15 frames (750ms at 50ms/frame)
     for _ in range(15):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="ILoveYou", confidence=0.9), t_ms))
@@ -142,15 +293,12 @@ def build_scenario_mode_latches():
     pipeline = GesturePipeline()
     frames = []
     t_ms = 0
-    # Hold Thumb_Up for 9 frames (450ms > 400ms mode_hold_ms)
     for _ in range(9):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Thumb_Up", confidence=0.9), t_ms))
-    # Engage Open_Palm driving with turbo latched
     for _ in range(6):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.4, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
-    # Drop hand for 2.2s (> 2000ms mode_timeout_ms) -> auto-clears latch
     for _ in range(5):
         t_ms += 500
         frames.append(({"landmarks": None, "gesture": None, "confidence": 0.0, "width": 640.0, "height": 480.0}, t_ms))
@@ -163,15 +311,12 @@ def build_scenario_ramp_step():
     pipeline.map_cfg["throttle_neutral"] = "frame_center"
     frames = []
     t_ms = 0
-    # Engage at center
     for _ in range(4):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.5, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
-    # Step to full forward (cy=0.1) for 10 frames
     for _ in range(10):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.1, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
-    # Step to full reverse (cy=0.9) for 12 frames
     for _ in range(12):
         t_ms += 50
         frames.append((make_hand(cx=0.5, cy=0.9, scale=80.0, tilt_deg=0.0, gesture="Open_Palm", confidence=0.9), t_ms))
@@ -181,14 +326,19 @@ def build_scenario_ramp_step():
 def generate_all_golden_vectors():
     scenarios_list = [
         build_scenario_neutral(),
+        build_scenario_tilt_sustained_without_label(),
+        build_scenario_classifier_dropout_during_tilt(),
+        build_scenario_symmetric_monotonic_throttle(),
+        build_scenario_monotonic_anchor_throttle(),
+        build_scenario_anchoring_position_invariance(),
         build_scenario_joystick(),
         build_scenario_flicker(),
         build_scenario_estop(),
+        build_scenario_geometric_fist_estop(),
         build_scenario_fun_trick(),
         build_scenario_mode_latches(),
         build_scenario_ramp_step(),
     ]
-    # Add steady tilt scenarios
     for s in build_scenario_steady_tilt_aspects():
         scenarios_list.append(s)
 

@@ -91,6 +91,7 @@ def parse_args():
     parser.add_argument("--sensitivity", type=float, default=None, help="Sensitivity multiplier")
     parser.add_argument("--smoothing", type=str, choices=["low", "medium", "high"], default=None, help="Smoothing preset")
     parser.add_argument("--no-mirror", action="store_true", help="Disable mirror preview display")
+    parser.add_argument("--trace", type=str, default=None, help="Path to write per-frame diagnostic CSV trace")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug readout")
     parser.add_argument("--no-gui", action="store_true", help="Run in headless mode without cv2.imshow GUI")
     return parser.parse_args()
@@ -165,9 +166,37 @@ def draw_hud(
             cv2.line(frame_disp, (anc_disp_x, anc_disp_y), (hand_disp_x, hand_disp_y), (0, 255, 0), 2)
 
     elif control_mode == "classic":
-        # Neutral horizontal throttle line
-        neutral_y = debug.get("neutral_y") or (0.5 * h)
-        cv2.line(frame_disp, (0, int(neutral_y)), (w, int(neutral_y)), (80, 80, 80), 1)
+        throttle_mode = pipeline.map_cfg.get("throttle_neutral", "anchor")
+        if throttle_mode == "frame_center":
+            neutral_y = int(0.5 * h)
+            cv2.line(frame_disp, (0, neutral_y), (w, neutral_y), (0, 215, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                frame_disp,
+                "NEUTRAL ZONE",
+                (15, max(15, neutral_y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (0, 215, 255),
+                1,
+            )
+        elif anchor is not None and state != "IDLE":
+            neutral_y = int(anchor[1])
+            cv2.line(frame_disp, (0, neutral_y), (w, neutral_y), (0, 215, 255), 1, cv2.LINE_AA)
+            cv2.putText(
+                frame_disp,
+                "ANCHOR NEUTRAL",
+                (15, max(15, neutral_y - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                (0, 215, 255),
+                1,
+            )
+            anc_disp_x = to_disp_x(anchor[0])
+            cv2.circle(frame_disp, (anc_disp_x, neutral_y), 4, (0, 215, 255), -1)
+            if smoothed_hand is not None:
+                hand_disp_x = to_disp_x(smoothed_hand[0])
+                hand_disp_y = int(smoothed_hand[1])
+                cv2.line(frame_disp, (anc_disp_x, neutral_y), (hand_disp_x, hand_disp_y), banner_color, 2)
 
         # Tilt gauge in top right
         gauge_cx, gauge_cy = w - 80, 70
@@ -335,6 +364,25 @@ def main():
     fps_start_time = time.time()
     show_debug = args.debug
 
+    # Initialize CSV trace file if --trace specified
+    trace_file = None
+    trace_writer = None
+    if args.trace:
+        import csv
+        trace_path = Path(args.trace).resolve()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_file = open(trace_path, "w", newline="", encoding="utf-8")
+        trace_writer = csv.writer(trace_file)
+        trace_writer.writerow([
+            "t_ms", "gesture", "confidence", "state", "has_hand",
+            "palm_x", "palm_y", "scale", "tilt", "extension",
+            "anchor_x", "anchor_y",
+            "lin_raw_disp", "lin_norm", "lin_after_deadzone", "lin_after_expo", "lin_target", "lin_ramped",
+            "ang_raw_tilt", "ang_norm", "ang_after_deadzone", "ang_after_expo", "ang_target", "ang_ramped",
+            "flags"
+        ])
+        print(f"[TRACE] Logging per-frame trace to {trace_path}")
+
     current_result = {
         "linear": 0,
         "angular": 0,
@@ -345,8 +393,11 @@ def main():
             "smoothed_hand": None,
             "smoothed_tilt": 0.0,
             "smoothed_scale": 80.0,
+            "finger_extension": 0.0,
             "pre_ramp_linear": 0,
             "pre_ramp_angular": 0,
+            "linear_stages": {"raw": 0.0, "norm": 0.0, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0, "ramped": 0},
+            "angular_stages": {"raw": 0.0, "norm": 0.0, "after_deadzone": 0.0, "after_expo": 0.0, "target": 0, "ramped": 0},
             "latched_mode": "NORMAL",
             "neutral_tilt": 0.0,
             "neutral_y": 240.0,
@@ -366,7 +417,6 @@ def main():
             camera_latency_ms = (now - frame_time) * 1000.0
 
             h, w = frame_raw.shape[:2]
-            # Convert to RGB without flipping for MediaPipe (user space handled in pipeline)
             frame_rgb = cv2.cvtColor(frame_raw, cv2.COLOR_BGR2RGB)
 
             # 1. MediaPipe Gesture Recognition
@@ -380,6 +430,40 @@ def main():
                     "height": h,
                 }
                 current_result = pipeline.step(frame_input, now_ms)
+
+                if trace_writer:
+                    d = current_result["debug"]
+                    ls = d.get("linear_stages", {})
+                    as_ = d.get("angular_stages", {})
+                    anc = d.get("anchor")
+                    sh = d.get("smoothed_hand")
+                    trace_writer.writerow([
+                        now_ms,
+                        tracking_res.gesture or "",
+                        f"{tracking_res.gesture_confidence:.3f}",
+                        d.get("state", ""),
+                        1 if tracking_res.landmarks else 0,
+                        f"{sh[0]:.2f}" if sh else "",
+                        f"{sh[1]:.2f}" if sh else "",
+                        f"{d.get('smoothed_scale') or 0.0:.2f}",
+                        f"{d.get('smoothed_tilt') or 0.0:.2f}",
+                        f"{d.get('finger_extension') or 0.0:.3f}",
+                        f"{anc[0]:.2f}" if anc else "",
+                        f"{anc[1]:.2f}" if anc else "",
+                        f"{ls.get('raw', 0.0):.4f}",
+                        f"{ls.get('norm', 0.0):.4f}",
+                        f"{ls.get('after_deadzone', 0.0):.4f}",
+                        f"{ls.get('after_expo', 0.0):.4f}",
+                        ls.get("target", 0),
+                        current_result["linear"],
+                        f"{as_.get('raw', 0.0):.4f}",
+                        f"{as_.get('norm', 0.0):.4f}",
+                        f"{as_.get('after_deadzone', 0.0):.4f}",
+                        f"{as_.get('after_expo', 0.0):.4f}",
+                        as_.get("target", 0),
+                        current_result["angular"],
+                        current_result["flags"],
+                    ])
             except Exception as e:
                 print(f"[WARN] Frame processing error: {e}")
 

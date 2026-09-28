@@ -21,8 +21,11 @@
     }
   },
   "state_machine": {
-    "enter_conf": 0.7,
-    "exit_conf": 0.4,
+    "enter_conf": 0.65,
+    "exit_conf": 0.35,
+    "open_extension_enter": 1.55,
+    "open_extension_exit": 1.30,
+    "fist_extension": 1.15,
     "engage_frames": 4,
     "grace_ms": 150,
     "estop_frames": 2,
@@ -37,12 +40,14 @@
     "throttle_neutral": "anchor",
     "classic_tilt_full_scale": 40.0,
     "classic_tilt_deadzone": 0.10,
-    "classic_throttle_full_scale": 1.0,
+    "classic_throttle_full_scale": 1.2,
     "classic_throttle_deadzone": 0.15,
+    "reverse_scale": 0.60,
     "joystick_full_scale": 1.2,
     "joystick_deadzone": 0.15,
     "expo": 0.4,
-    "min_hand_scale": 20.0
+    "min_hand_scale": 20.0,
+    "cross_axis_coupling_ratio": 0.0
   },
   "ramping": {
     "accel_rate": 250.0,

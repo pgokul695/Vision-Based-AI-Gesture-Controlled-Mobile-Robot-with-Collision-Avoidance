@@ -55,6 +55,28 @@ test('Component: applyAxisShaping deadzone, expo, clamping', () => {
     // Beyond full scale clamped
     assert.strictEqual(applyAxisShaping(1.5, 1.0, 0.10, 1.0, 0.4), 100);
 
-    // Symmetry
+    // Symmetry (reverse_scale = 1.0)
     assert.strictEqual(applyAxisShaping(-1.0, 1.0, 0.10, 1.0, 0.4), -100);
+
+    // Reverse scale limits negative output to 60%
+    assert.strictEqual(applyAxisShaping(-1.0, 1.0, 0.10, 1.0, 0.4, 0.60), -60);
+    // Beyond full scale clamped at -60
+    assert.strictEqual(applyAxisShaping(-2.0, 1.0, 0.10, 1.0, 0.4, 0.60), -60);
 });
+
+test('Component: cross-axis coupling suppression', () => {
+    const p = new GesturePipeline();
+    p.mapCfg.cross_axis_coupling_ratio = 2.0;
+    p.mapCfg.tilt_neutral = 'fixed';
+
+    const [lin, ang] = p._computeMappingTraced(320.0, 140.0, 6.0, 80.0, 480.0);
+    assert.strictEqual(Math.abs(lin), 100);
+    assert.strictEqual(ang, 0); // Angular attenuated to 0 because linear is > 4x angular
+
+    // When disabled (0.0), no attenuation
+    p.mapCfg.cross_axis_coupling_ratio = 0.0;
+    const [lin2, ang2] = p._computeMappingTraced(320.0, 140.0, 6.0, 80.0, 480.0);
+    assert.strictEqual(Math.abs(lin2), 100);
+    assert.notStrictEqual(ang2, 0);
+});
+
