@@ -10,7 +10,12 @@ import gzip
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+try:
+    REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+except NameError:
+    # Under PlatformIO SCons execution, __file__ is undefined
+    cwd = Path(".").resolve()
+    REPO_ROOT = cwd.parent if (cwd / "src").is_dir() and (cwd.parent / "webapp").is_dir() else cwd
 WEBAPP_DIR = REPO_ROOT / "webapp"
 OUTPUT_HEADER = REPO_ROOT / "firmware" / "src" / "network" / "web_server_content.h"
 
@@ -99,3 +104,10 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
+
+# Support PlatformIO extra_scripts execution (e.g. pre:tools/build_web_assets.py)
+try:
+    Import("env")
+    main()
+except NameError:
+    pass

@@ -149,7 +149,7 @@ export class GestureTab {
         if (loadingText) loadingText.textContent = 'Loading MediaPipe Vision Library...';
 
         const MP_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
-        const { GestureRecognizer, FilesetResolver } = await import(MP_CDN);
+        const { GestureRecognizer, FilesetResolver } = await import(`${MP_CDN}/vision_bundle.mjs`);
 
         if (loadingText) loadingText.textContent = 'Initializing Vision WASM Engine...';
         const filesetResolver = await FilesetResolver.forVisionTasks(`${MP_CDN}/wasm`);
